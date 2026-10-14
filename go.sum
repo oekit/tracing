@@ -33,8 +33,8 @@ github.com/redis/go-redis/v9 v9.22.0 h1:laDvpYXTJtZLloinw1fA5Kqd6HAEH2XKxOkG/PDq
 github.com/redis/go-redis/v9 v9.22.0/go.mod h1:y2g0Wj8rQvuK0ELM+oxSudcLtC09JScs98I/X9gRWY4=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-github.com/yi-nology/ekit-logx v0.1.0 h1:34aTngnZpVc/aoF6scCa5wE1lic2LgFQcVYqX04Sy8Q=
-github.com/yi-nology/ekit-logx v0.1.0/go.mod h1:CZSIsEzykHBXyuRJ/XF6cRWZMGAX/kFL7czBcACEOUE=
+github.com/yi-nology/ekit-logx v0.1.1 h1:r7c0HlYVqeKLBZdKJo+3PirjiCbdnyIgs1Dkj67XVqk=
+github.com/yi-nology/ekit-logx v0.1.1/go.mod h1:CZSIsEzykHBXyuRJ/XF6cRWZMGAX/kFL7czBcACEOUE=
 github.com/zeebo/xxh3 v1.1.0 h1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=
 github.com/zeebo/xxh3 v1.1.0/go.mod h1:IisAie1LELR4xhVinxWS5+zf1lA4p0MW4T+w+W07F5s=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
