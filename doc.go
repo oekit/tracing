@@ -19,7 +19,7 @@
 //	}
 //	defer provider.Shutdown(context.Background())
 //
-//	// Hertz server tracing（通过 instrumentation/hertzotel 接入）
+//	// Hertz server tracing（hertzotel 住在 github.com/oekit/hertz 仓）
 //	tracing := hertzotel.NewServerTracing()
 //	h := server.New(server.WithHostPorts(":8080"), tracing.Option)
 //	h.Use(tracing.Middleware)
@@ -51,10 +51,13 @@
 //	    // ...
 //	})
 //
-// # 子包
+// # 子包（装饰器显式接入——核心组件不做 tracing 强制注入）
 //
-//   - instrumentation/hertzotel: Hertz server/client 追踪（含 NewServerTracing 成对 API）
-//   - instrumentation/kitexotel: Kitex server/client 追踪
-//   - instrumentation/httpotel: HTTP 客户端追踪（标准库 http.Client）
-//   - instrumentation/redis: Redis 追踪
+//   - httpotel: 标准库 net/http 客户端追踪（otelhttp Transport 封装）
+//   - redisotel: go-redis 追踪（redisotel.InstrumentTracing(client.Client())）
+//   - gormotel: GORM 追踪插件（db.Use(gormotel.NewPlugin())）
+//   - traceid: trace_id 生成/提取/桥接
+//
+// Hertz/Kitex 框架侧 instrumentation 分属 github.com/oekit/hertz（hertzotel/
+// hertztracer）与 github.com/oekit/kitex（kitexotel）。
 package tracing
