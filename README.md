@@ -14,19 +14,27 @@
 go get github.com/oekit/tracing@v0.1.5
 ```
 
-## 快速使用
+## 能做什么
 
+- **tracing.Init**：OTLP gRPC 导出，Endpoint 为空 = 仅本地 provider 零网络
+- **traceid**：trace_id 生成/提取/注入的**唯一真相源**（HTTP 中间件与 logx 共用）
+- **httpotel/redisotel**：net/http 与 go-redis 插桩
+
+## 使用示例
+
+### 初始化 + HTTP 入口注入
 ```go
-import "github.com/oekit/tracing"
+import (
+    "github.com/oekit/tracing"
+    "github.com/oekit/tracing/traceid"
+)
 
-provider, _ := tracing.Init(tracing.Config{
-    ServiceName: "my-service",
-    Endpoint:    "otel-collector:4317", // 为空 = 仅本地 provider，零网络
-    Insecure:    true,
-})
+provider, _ := tracing.Init(tracing.Config{ServiceName: "svc", Endpoint: "otel:4317", Insecure: true})
 defer provider.Shutdown(context.Background())
-```
 
+h.Use(traceid.Middleware()...) // 入口生成/透传 trace_id
+id := traceid.FromContext(ctx) // 任意层提取
+```
 ## 包清单
 
 - 根包 \`tracing\`（import \`github.com/oekit/tracing\`）— Init(Config) OTel 接入
