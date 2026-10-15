@@ -3,7 +3,7 @@ package traceid
 import (
 	"context"
 
-	"github.com/openekit/logx"
+	"github.com/oekit/logx"
 )
 
 const (

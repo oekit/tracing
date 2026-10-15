@@ -1,10 +1,10 @@
-module github.com/openekit/tracing
+module github.com/oekit/tracing
 
 go 1.26.0
 
 require (
 	github.com/cloudwego/hertz v0.10.6
-	github.com/openekit/logx v0.1.5
+	github.com/oekit/logx v0.1.6
 	github.com/redis/go-redis/extra/redisotel/v9 v9.22.0
 	github.com/redis/go-redis/v9 v9.22.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
