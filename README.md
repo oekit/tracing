@@ -1,6 +1,6 @@
 # tracing
 
-> 分布式追踪门面——OTel 接入/trace_id 真相源/HTTP·Redis 插桩
+> 分布式追踪门面——OTel 接入/trace_id 真相源/HTTP·Redis·GORM 插桩装饰器
 
 > 🌐 项目主页：**https://oekit.github.io/** · 名称由来：**O**pen **E**asy **Kit**（开源 · 易用 · 工具集合）
 > 🤖 AI Agent：本仓规范与硬规则见 [AGENTS.md](AGENTS.md)；机器可读索引见 [llms.txt](https://oekit.github.io/llms.txt)（接口签名以源码为准）。
@@ -8,12 +8,14 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/tracing@v0.1.5
+go get github.com/oekit/tracing@v0.2.0
 ```
 
 ## 这个仓库做什么
 
-`tracing` 是**分布式追踪门面**：OTel 接入、`trace_id` 唯一真相源、HTTP/Redis 插桩。
+`tracing` 是**分布式追踪门面**：OTel 接入、`trace_id` 唯一真相源、HTTP/Redis/GORM 插桩装饰器。
+
+**口径：核心组件零 tracing 强制注入，装饰器显式接入**——redisx/gormx 等核心构造无任何可观测性副作用，需要 span 时用本仓装饰器一行接入。
 
 ## 组成
 
@@ -21,8 +23,9 @@ go get github.com/oekit/tracing@v0.1.5
 |---|---|
 | 根包 | `tracing.Init(Config)`：OTLP 导出器 + provider（Endpoint 为空 = 仅本地 provider，零网络） |
 | `traceid` | trace_id 生成/提取/桥接：`Middleware()`、`FromContext`、`ContextWith`。logx 的 `Ctx*` 方法自动读取 |
-| `httpotel` | net/http 插桩 |
-| `redisotel` | go-redis 插桩 |
+| `httpotel` | net/http 插桩（`Transport()` / `WrapTransport`） |
+| `redisotel` | go-redis 插桩（`InstrumentTracing`） |
+| `gormotel` | GORM 插桩插件（`NewPlugin`，`db.Use` 显式挂载） |
 
 ## 快速使用
 
@@ -35,6 +38,21 @@ provider, _ := tracing.Init(tracing.Config{
     Insecure:    true,
 })
 defer provider.Shutdown(context.Background())
+```
+
+装饰器接入（均为显式、无 SDK 时 noop）：
+
+```go
+import (
+    gormotel "github.com/oekit/tracing/gormotel"
+    redisotel "github.com/oekit/tracing/redisotel"
+)
+
+// GORM：显式挂插件
+_ = db.Use(gormotel.NewPlugin(gormotel.WithDBName("mydb")))
+
+// Redis：装饰已创建的 client
+_ = redisotel.InstrumentTracing(rdb.Client())
 ```
 
 ## 边界

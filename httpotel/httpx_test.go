@@ -1,4 +1,4 @@
-package httpxotel
+package httpotel
 
 import (
 	"net/http"
