@@ -6,7 +6,7 @@ require (
 	github.com/cloudwego/hertz v0.10.6
 	github.com/redis/go-redis/extra/redisotel/v9 v9.22.0
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/yi-nology/ekit-logx v0.1.1
+	github.com/yi-nology/ekit-logx v0.1.4
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.62.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.28.0
