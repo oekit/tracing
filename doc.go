@@ -45,11 +45,9 @@
 //
 // bootstrap.Run 会自动初始化 tracing：
 //
-//	bootstrap.Run(bootstrap.Config{
-//	    Tracing: &tracing.Config{
-//	        Endpoint: "otel-collector:4317",
-//	    },
-//	}, func(app *bootstrap.App) error {
+//	b, _ := bootstrap.New(bootstrap.WithServiceName("my-service"),
+//	    bootstrapobs.WithTracing(tracing.Config{Endpoint: "otel-collector:4317"})) // bootstrap/obs
+//	b.Run(func(app *bootstrap.App) error {
 //	    // ...
 //	})
 //
