@@ -3,7 +3,7 @@ package traceid
 import (
 	"context"
 
-	"github.com/yi-nology/ekit-logx"
+	"github.com/openekit/logx"
 )
 
 const (

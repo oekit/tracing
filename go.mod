@@ -1,12 +1,12 @@
-module github.com/yi-nology/ekit-tracing
+module github.com/openekit/tracing
 
 go 1.26.0
 
 require (
 	github.com/cloudwego/hertz v0.10.6
+	github.com/openekit/logx v0.1.5
 	github.com/redis/go-redis/extra/redisotel/v9 v9.22.0
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/yi-nology/ekit-logx v0.1.4
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.62.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.28.0
