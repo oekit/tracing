@@ -1,3 +1,7 @@
+## [v0.2.2] — 2026-10-17
+
+- fix(deps): logx 地板 v0.5.0 → v0.6.0（零代码改动）
+
 # Changelog — oekit/tracing
 
 由 ekit v0.34.0（git.enjoye.top/enjoydream/ekit，冻结维护）拆分而来。所有 notable 变更记录如下。
