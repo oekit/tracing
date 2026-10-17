@@ -1,16 +1,10 @@
 # AGENTS.md — oekit/tracing
 
-> OpenTelemetry Init + trace_id 真相源（traceid 包）+ httpotel / redisotel / gormotel 插桩装饰器
-> 当前版本：`v0.2.0` · module：`github.com/oekit/tracing` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> OpenTelemetry 追踪 + trace_id 真相源
+> 当前版本：`v0.2.1` · module：`github.com/oekit/tracing` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
-`./`、`httpotel/`、`redisotel/`、`gormotel/`、`traceid/`
-
-## 本仓特有规则
-- **装饰器显式接入**：核心组件（redisx/gormx）零 tracing 注入；需要 span 由本仓装饰器显式接入——
-  `redisotel.InstrumentTracing(c.Client())`、`db.Use(gormotel.NewPlugin())`、`httpotel.WrapTransport(rt)`
-- 命名纪律：目录名 = 包名 = `xxxotel`（对齐 hertzotel/kitexotel）；禁止再建 `instrumentation/*` 别名包
-- gormotel 只依赖 gorm.io/gorm + OTel API，**禁止依赖 oekit/gorm 模块**（保持与 gorm 仓并行发版）
+`./`、`gormotel/`、`httpotel/`、`redisotel/`、`traceid/`
 
 ## 硬规则速览（全矩阵适用）
 
