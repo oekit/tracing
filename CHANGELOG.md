@@ -1,3 +1,7 @@
+## [v0.3.0] — 2026-10-20
+
+- Config 新增 Protocol（grpc 缺省 / http）与 Headers（两种协议都生效）——OTLP/HTTP 成为包内一条分支：装配 otlptracehttp/otlpmetrichttp，与 gRPC 分支同样的全局语义（TracerProvider + MeterProvider 含 runtime 指标 + 传播器 + 关闭被替换的旧 provider），换协议退回换一条传输；端点接受完整 signal URL / 基址 / 无 scheme 的 host:port 三种写法；未知 Protocol 报错不静默回落；端点不嵌凭据（凭据走 Headers，不进日志与错误信息）(#23)
+
 ## [v0.2.3] — 2026-10-19
 
 - build: 矩阵内依赖地板对齐（align_floors 不动点）：logx v0.6.0 → v0.7.0
