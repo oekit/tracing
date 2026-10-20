@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -40,16 +41,32 @@ type Provider interface {
 	Shutdown(ctx context.Context) error
 }
 
+// 导出协议常量（Config.Protocol 取值）。
+const (
+	// ProtocolGRPC OTLP/gRPC 导出协议——Config.Protocol 的缺省值。
+	ProtocolGRPC = "grpc"
+	// ProtocolHTTP OTLP/HTTP 导出协议。Langfuse / SaaS 类观测后端基本只提供
+	// HTTP 接收端，走这条分支。
+	ProtocolHTTP = "http"
+)
+
 // Config 是 OpenTelemetry Provider 的配置。
 type Config struct {
 	// ServiceName 服务名称，如 "wechat"、"fuxi_engine"。
 	ServiceName string
 
-	// Endpoint OTLP gRPC 地址，如 "otel-collector:4317"。
+	// Endpoint OTLP 端点。
+	//
+	// grpc 协议：host:port 形态，如 "otel-collector:4317"。
+	// http 协议：接受完整 signal URL（"https://host/api/otel/v1/traces"）、
+	// 基址（"https://host"、"https://host/api/otel"）或无 scheme 的
+	// host:port（"otel-collector:4318"）；详见 otlphttp.go 的推导规则。
+	//
 	// 为空时不创建 OTLP 导出器、不发起任何网络连接，仅安装本地 provider。
 	Endpoint string
 
 	// Insecure 是否跳过 TLS（本地开发用 true，生产用 false）。
+	// http 协议下 Endpoint 自带 scheme 时以 scheme 为准（http:// 即不加密）。
 	Insecure bool
 
 	// SampleRate 采样率，0.0~1.0。
@@ -57,6 +74,20 @@ type Config struct {
 	// SampleRate >= 1.0 或 <= 0 均为全量采样（默认 1.0）——<=0 沿用旧版
 	// "静默全量" 语义，不视为错误。
 	SampleRate float64
+
+	// Protocol 导出协议：ProtocolGRPC（缺省）/ ProtocolHTTP。
+	//
+	// 两种协议下 Init 的全局副作用完全一致——TracerProvider + MeterProvider
+	// （含 Go runtime 指标）+ 传播器 + 关闭被替换的旧 provider，差别只在
+	// 传输层。未知取值直接报错，不静默回落 grpc（静默回落会让「协议名写错」
+	// 表现为「连不上」而不是「协议名错了」）。
+	Protocol string
+
+	// Headers 随每次导出请求带上的附加头（认证等）。
+	//
+	// 两种协议都生效：http 形态是 HTTP 头，grpc 形态是 gRPC metadata。
+	// 属配置面——本包不会把头写进日志或错误信息。
+	Headers map[string]string
 }
 
 // Init 初始化 OpenTelemetry 全局 TracerProvider、Propagator（Endpoint 非空时
@@ -68,8 +99,10 @@ type Config struct {
 //     hertz-contrib/obs-opentelemetry/provider 的默认组合一致）
 //   - 采样: 0 < SampleRate < 1.0 → ParentBased(TraceIDRatioBased(rate))；
 //     SampleRate >= 1.0 或 <= 0 → 全量采样
-//   - Endpoint 非空时同时初始化 OTLP gRPC Metrics（15s 周期读取 + runtime 指标）；
+//   - Endpoint 非空时同时初始化 OTLP Metrics（15s 周期读取 + runtime 指标）；
 //     Endpoint 为空时跳过导出器初始化，不产生网络连接
+//   - 导出协议由 Config.Protocol 选：grpc（缺省）/ http。**两条分支的全局
+//     副作用完全相同**——传播器、指标、旧 provider 关闭都不因换协议而丢失
 //   - 重复调用 Init 会自动关闭上一个 provider 后再安装新 provider；
 //     被替换 provider 的原持有方再调用 Shutdown 会得到 already-shutdown
 //     类错误，可安全忽略。常规服务应只 Init 一次
@@ -108,14 +141,44 @@ func Init(cfg Config) (Provider, error) {
 	return p, nil
 }
 
-// newExportingProviders 创建带 OTLP gRPC 导出器的 Tracer/Meter Provider。
-// tracing 与 metrics 共用 Config.Endpoint 与 Insecure 配置。
+// newExportingProviders 按 Config.Protocol 选导出器分支，返回带 OTLP 导出器的
+// Tracer/Meter Provider。两条分支产出的结构一致——下游拿到的都是「装了指标、
+// 装了传播器、旧 provider 会被关掉」的完整装配，差别只在传输层。
 func newExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resource.Resource) (*sdktrace.TracerProvider, *metric.MeterProvider, error) {
+	protocol, err := resolveProtocol(cfg.Protocol)
+	if err != nil {
+		return nil, nil, err
+	}
+	if protocol == ProtocolHTTP {
+		return newHTTPExportingProviders(cfg, sampler, res)
+	}
+	return newGRPCExportingProviders(cfg, sampler, res)
+}
+
+// resolveProtocol 归一化 Protocol 取值：空 → grpc；大小写与空白不敏感。
+// 未知取值报错而非静默回落 grpc——回落会让「协议名写错」表现为「连不上」。
+func resolveProtocol(p string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "", ProtocolGRPC:
+		return ProtocolGRPC, nil
+	case ProtocolHTTP:
+		return ProtocolHTTP, nil
+	default:
+		return "", fmt.Errorf("tracing: unsupported protocol %q (want %q or %q)", p, ProtocolGRPC, ProtocolHTTP)
+	}
+}
+
+// newGRPCExportingProviders 创建带 OTLP gRPC 导出器的 Tracer/Meter Provider。
+// tracing 与 metrics 共用 Config.Endpoint 与 Insecure 配置。
+func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resource.Resource) (*sdktrace.TracerProvider, *metric.MeterProvider, error) {
 	// ---- tracing exporter ----
 	var traceOpts []otlptracegrpc.Option
 	traceOpts = append(traceOpts, otlptracegrpc.WithEndpoint(cfg.Endpoint))
 	if cfg.Insecure {
 		traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
+	}
+	if len(cfg.Headers) > 0 {
+		traceOpts = append(traceOpts, otlptracegrpc.WithHeaders(cfg.Headers))
 	}
 	traceExp, err := otlptrace.New(context.Background(), otlptracegrpc.NewClient(traceOpts...))
 	if err != nil {
@@ -133,6 +196,9 @@ func newExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resource.R
 	metricOpts = append(metricOpts, otlpmetricgrpc.WithEndpoint(cfg.Endpoint))
 	if cfg.Insecure {
 		metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
+	}
+	if len(cfg.Headers) > 0 {
+		metricOpts = append(metricOpts, otlpmetricgrpc.WithHeaders(cfg.Headers))
 	}
 	metricExp, err := otlpmetricgrpc.New(context.Background(), metricOpts...)
 	if err != nil {
