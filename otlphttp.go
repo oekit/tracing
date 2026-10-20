@@ -117,8 +117,10 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 
 	// ---- tracing exporter ----
 	var traceOpts []otlptracehttp.Option
-	traceOpts = append(traceOpts, otlptracehttp.WithEndpoint(ep.hostPort))
-	traceOpts = append(traceOpts, otlptracehttp.WithURLPath(tracePath))
+	traceOpts = append(traceOpts,
+		otlptracehttp.WithEndpoint(ep.hostPort),
+		otlptracehttp.WithURLPath(tracePath),
+	)
 	if ep.insecure {
 		traceOpts = append(traceOpts, otlptracehttp.WithInsecure())
 	}
@@ -138,8 +140,10 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 
 	// ---- metrics exporter（与 grpc 分支等价）----
 	var metricOpts []otlpmetrichttp.Option
-	metricOpts = append(metricOpts, otlpmetrichttp.WithEndpoint(ep.hostPort))
-	metricOpts = append(metricOpts, otlpmetrichttp.WithURLPath(metricPath))
+	metricOpts = append(metricOpts,
+		otlpmetrichttp.WithEndpoint(ep.hostPort),
+		otlpmetrichttp.WithURLPath(metricPath),
+	)
 	if ep.insecure {
 		metricOpts = append(metricOpts, otlpmetrichttp.WithInsecure())
 	}
