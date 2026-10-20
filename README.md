@@ -40,6 +40,34 @@ provider, _ := tracing.Init(tracing.Config{
 defer provider.Shutdown(context.Background())
 ```
 
+### OTLP/HTTP 后端（Langfuse / SaaS 类）
+
+`Config.Protocol` 选导出协议（`grpc` 缺省 / `http`），`Config.Headers` 带认证头。
+**两种协议下 Init 的全局副作用完全一致**——TracerProvider + MeterProvider（含 Go
+runtime 指标）+ 传播器 + 关闭被替换的旧 provider，差别只在传输层：换协议是换一条
+传输，不是换一整套可观测性语义。
+
+```go
+provider, _ := tracing.Init(tracing.Config{
+    ServiceName: "my-service",
+    Endpoint:    "https://cloud.example.com/api/public/otel/v1/traces",
+    Protocol:    tracing.ProtocolHTTP,
+    Headers:     map[string]string{"Authorization": "Bearer " + token},
+})
+```
+
+`Endpoint` 在 http 协议下接受三种写法：
+
+| 写法 | 示例 | traces / metrics 实际路径 |
+|---|---|---|
+| 完整 signal URL | `https://host/api/otel/v1/traces` | `/api/otel/v1/traces` 与 `/api/otel/v1/metrics`（同前缀换名） |
+| 基址 | `https://host`、`https://host/api/otel` | 基址 + `/v1/traces` 与 `/v1/metrics` |
+| 无 scheme 的 host:port | `otel-collector:4318` | 同上，scheme 由 `Insecure` 决定 |
+
+端点里**不嵌凭据**（`https://user:pass@host` 直接报错）——凭据走 `Headers`，URL
+里的凭据会进访问日志与代理日志。`Headers` 属配置面，本包不会把它写进日志或错误
+信息。
+
 装饰器接入（均为显式、无 SDK 时 noop）：
 
 ```go
