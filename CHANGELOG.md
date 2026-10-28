@@ -1,3 +1,13 @@
+## [v0.3.1] — 2026-10-28
+
+- chore(deps): 测试依赖的 sqlite 驱动换成纯 Go 实现，清掉 CGO 直接依赖
+
+主模块 go.mod 把 `gorm.io/driver/sqlite` v1.6.0（CGO 驱动，包装 `mattn/go-sqlite3`）列为**直接依赖**，而本仓**生产代码一行都没用它**——它只出现在 `gormotel/gorm_test.go` 里（真实 sqlite 集成测试）⇒ CGO 依赖链随本仓流向所有消费方的模块图与 go.sum；且本仓测试在 `CGO_ENABLED=0` 下不可用。
+
+换成**纯 Go 驱动** `github.com/glebarez/sqlite`（modernc 系）⇒ ① 本仓测试可在 `CGO_ENABLED=0` 下运行；② 主模块不再直接依赖任何 CGO 驱动。
+
+配套：`modernc.org/sqlite` → v1.61.0（当前最新）、`github.com/glebarez/go-sqlite` → v1.23.0（均为 go 1.26 内可用的最高版），`go` 指令保持 1.26.0 不变（#37）
+
 ## [v0.3.0] — 2026-10-20
 
 - Config 新增 Protocol（grpc 缺省 / http）与 Headers（两种协议都生效）——OTLP/HTTP 成为包内一条分支：装配 otlptracehttp/otlpmetrichttp，与 gRPC 分支同样的全局语义（TracerProvider + MeterProvider 含 runtime 指标 + 传播器 + 关闭被替换的旧 provider），换协议退回换一条传输；端点接受完整 signal URL / 基址 / 无 scheme 的 host:port 三种写法；未知 Protocol 报错不静默回落；端点不嵌凭据（凭据走 Headers，不进日志与错误信息）(#23)
