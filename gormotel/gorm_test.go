@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
