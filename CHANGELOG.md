@@ -1,3 +1,13 @@
+## [v0.3.2] — 2026-10-29
+
+- feat: Config 新增 DisableMetrics（**不导出 OTLP Metrics**，含 Go runtime 指标）——collector 侧**没有 metrics 管线**时的止噪开关
+
+OTel collector 只为**配了管线的 signal** 注册 gRPC service；collector 只有 traces 管线时，它对 MetricsService 回 `Unimplemented: unknown service opentelemetry.proto.collector.metrics.v1.MetricsService`，而本包的周期读取器**每 15s 推一次** ⇒ 表现为「服务一切正常，但日志每 15s 一条导出失败」。
+
+此时这些指标**本来就无处可去**（collector 会丢弃）⇒ 置 `DisableMetrics: true` 即止噪：不建 OTLP metrics 导出器、不启动 Go runtime 指标采集、全局 MeterProvider 保持调用方原样（业务侧 `otel.Meter` 打点照常可用，只是不导出）。待 collector 配好 metrics 管线后把该字段改回 `false` 即恢复。
+
+**零值 false = 保持既有行为**（新增字段不改任何既有调用方的行为面，无 opt-in 陷阱）；grpc 与 http 两条分支同一语义。
+
 ## [v0.3.1] — 2026-10-28
 
 - chore(deps): 测试依赖的 sqlite 驱动换成纯 Go 实现，清掉 CGO 直接依赖

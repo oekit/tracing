@@ -68,6 +68,28 @@ provider, _ := tracing.Init(tracing.Config{
 里的凭据会进访问日志与代理日志。`Headers` 属配置面，本包不会把它写进日志或错误
 信息。
 
+### collector 没有 metrics 管线时（止噪开关）
+
+OTel collector 只为**配了管线的 signal** 注册 gRPC service。collector 只配了
+traces 管线时，它对 MetricsService 回 `Unimplemented: unknown service
+opentelemetry.proto.collector.metrics.v1.MetricsService`，而本包的周期读取器
+**每 15s 推一次** ⇒ 表现为「服务一切正常，但日志每 15s 一条导出失败」。
+
+此时这些指标**本来就无处可去**（collector 会丢弃）⇒ `DisableMetrics: true` 即止噪：
+不建 OTLP metrics 导出器、不启动 Go runtime 指标采集、全局 MeterProvider 保持调用方
+原样（业务侧 `otel.Meter` 打点照常可用，只是不导出）。待 collector 配好 metrics
+管线后把该字段改回 `false` 即恢复。
+
+```go
+provider, _ := tracing.Init(tracing.Config{
+    ServiceName:    "my-service",
+    Endpoint:       "otel-collector:4317",
+    DisableMetrics: true, // collector 无 metrics 管线 ⇒ 停推止噪
+})
+```
+
+**零值 false = 保持既有行为**（新增字段不改任何既有调用方的行为面）。
+
 装饰器接入（均为显式、无 SDK 时 noop）：
 
 ```go
