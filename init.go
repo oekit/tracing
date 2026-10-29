@@ -88,6 +88,22 @@ type Config struct {
 	// 两种协议都生效：http 形态是 HTTP 头，grpc 形态是 gRPC metadata。
 	// 属配置面——本包不会把头写进日志或错误信息。
 	Headers map[string]string
+
+	// DisableMetrics 不导出 OTLP Metrics（含 Go runtime 指标）。
+	//
+	// 零值 false = **保持既有行为**（导出 metrics）——新增字段不改任何既有调用方的
+	// 行为面（无 opt-in 陷阱）。
+	//
+	// 什么时候该置 true：**collector 侧没有 metrics 管线**时。OTel collector 只为
+	// 配了管线的 signal 注册 gRPC service；没有 metrics 管线时它对 MetricsService 回
+	// `Unimplemented: unknown service ...MetricsService`，而本包的周期读取器每 15s
+	// 推一次 ⇒ 表现为「服务正常但日志每 15s 一条导出失败」。
+	// 此时 metrics 本来也无处可去（collector 会丢弃）⇒ 关掉推送即**止噪**，
+	// 待 collector 配好 metrics 管线后把该字段改回 false 即可恢复。
+	//
+	// 置 true 时：不创建 OTLP Metrics 导出器、不启动 Go runtime 指标采集、
+	// 全局 MeterProvider 保持 noop（业务侧 otel.Meter 打点照常可用，只是不导出）。
+	DisableMetrics bool
 }
 
 // Init 初始化 OpenTelemetry 全局 TracerProvider、Propagator（Endpoint 非空时
@@ -192,6 +208,11 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	)
 
 	// ---- metrics exporter（与旧 provider 默认行为等价）----
+	// ⭐ DisableMetrics=true ⇒ 不建 metrics 导出器（collector 侧无 metrics 管线时
+	// 推送只会每 15s 换一条 Unimplemented 报错，且这些指标本就无处可去）。
+	if cfg.DisableMetrics {
+		return tp, nil, nil
+	}
 	var metricOpts []otlpmetricgrpc.Option
 	metricOpts = append(metricOpts, otlpmetricgrpc.WithEndpoint(cfg.Endpoint))
 	if cfg.Insecure {

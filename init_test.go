@@ -184,3 +184,57 @@ func TestNewResource_ServiceName(t *testing.T) {
 		t.Error("semconv ServiceNameKey lookup failed")
 	}
 }
+
+// ⭐ DisableMetrics：collector 侧**没有 metrics 管线**时的止噪开关。
+//
+// 判据面 = **全局 MeterProvider 有没有被替换**：关掉时不建 OTLP metrics 导出器、
+// 不启动 Go runtime 指标采集 ⇒ 全局保持调用方原样（noop 或既有 provider）。
+func TestInit_DisableMetrics_KeepsGlobalMeterProvider(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exporter test in -short mode: shutdown flush may attempt network")
+	}
+	before := otel.GetMeterProvider()
+
+	p, err := Init(Config{
+		ServiceName:    "test-svc",
+		Endpoint:       "localhost:4317",
+		Insecure:       true,
+		DisableMetrics: true,
+	})
+	if err != nil {
+		t.Fatalf("Init() with DisableMetrics error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("Init() returned nil provider")
+	}
+	if got := otel.GetMeterProvider(); got != before {
+		t.Fatalf("DisableMetrics=true 仍替换了全局 MeterProvider：%T != %T", got, before)
+	}
+	_ = p.Shutdown(context.Background())
+}
+
+// ⭐ 反向判据（防「开关写反」）：默认（不设 DisableMetrics）**必须**导出 metrics
+// ⇒ 全局 MeterProvider 被替换成导出的 provider。
+// ⭐ 这条同时守住「新增字段不改既有调用方行为面」这条纪律。
+func TestInit_DefaultExportsMetrics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exporter test in -short mode: shutdown flush may attempt network")
+	}
+	before := otel.GetMeterProvider()
+
+	p, err := Init(Config{
+		ServiceName: "test-svc",
+		Endpoint:    "localhost:4317",
+		Insecure:    true,
+	})
+	if err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("Init() returned nil provider")
+	}
+	if got := otel.GetMeterProvider(); got == before {
+		t.Fatal("默认行为未导出 metrics（全局 MeterProvider 未被替换）——既有调用方行为面被改了")
+	}
+	_ = p.Shutdown(context.Background())
+}

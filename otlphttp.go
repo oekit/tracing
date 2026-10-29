@@ -139,6 +139,12 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	)
 
 	// ---- metrics exporter（与 grpc 分支等价）----
+	// ⭐ DisableMetrics=true ⇒ 不建 metrics 导出器（与 grpc 分支同一纪律）：
+	// collector 侧无 metrics 管线时推送只会每 15s 换一条 Unimplemented 报错，
+	// 且这些指标本就无处可去 ⇒ 关掉即止噪，待配好 metrics 管线后改回 false 即可恢复。
+	if cfg.DisableMetrics {
+		return tp, nil, nil
+	}
 	var metricOpts []otlpmetrichttp.Option
 	metricOpts = append(metricOpts,
 		otlpmetrichttp.WithEndpoint(ep.hostPort),
