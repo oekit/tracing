@@ -10,7 +10,7 @@ OTel collector 只为**配了管线的 signal** 注册 gRPC service；collector 
 
 ## [v0.3.1] — 2026-10-28
 
-- chore(deps): 测试依赖的 sqlite 驱动换成纯 Go 实现，清掉 CGO 直接依赖
+- #37：chore(deps): 测试依赖的 sqlite 驱动换成纯 Go 实现，清掉 CGO 直接依赖
 
 主模块 go.mod 把 `gorm.io/driver/sqlite` v1.6.0（CGO 驱动，包装 `mattn/go-sqlite3`）列为**直接依赖**，而本仓**生产代码一行都没用它**——它只出现在 `gormotel/gorm_test.go` 里（真实 sqlite 集成测试）⇒ CGO 依赖链随本仓流向所有消费方的模块图与 go.sum；且本仓测试在 `CGO_ENABLED=0` 下不可用。
 
