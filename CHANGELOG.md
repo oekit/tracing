@@ -1,3 +1,7 @@
+## [v0.3.3] — 2026-11-06
+
+- build: 矩阵依赖地板对齐（维护轮 #233）
+
 ## [v0.3.2] — 2026-10-29
 
 - feat: Config 新增 DisableMetrics（**不导出 OTLP Metrics**，含 Go runtime 指标）——collector 侧**没有 metrics 管线**时的止噪开关
