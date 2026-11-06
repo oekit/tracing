@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/tracing@v0.3.3
+go get github.com/oekit/tracing@v0.3.4
 ```
 
 ## 这个仓库做什么
@@ -22,7 +22,7 @@ go get github.com/oekit/tracing@v0.3.3
 | 包 | 做什么 |
 |---|---|
 | 根包 | `tracing.Init(Config)`：OTLP 导出器 + provider（Endpoint 为空 = 仅本地 provider，零网络） |
-| `traceid` | trace_id 生成/提取/桥接：`Middleware()`、`FromContext`、`ContextWith`。logx 的 `Ctx*` 方法自动读取 |
+| `traceid` | trace_id 生成/提取/桥接：`ContextWith`、`FromContext`、`Key`/`HeaderKey`/`IDLength`。HTTP 中间件正身在 [oekit/middleware](https://github.com/oekit/middleware) 的 TraceID 中间件（`hmw.Middleware` 标准栈首件，常量取本包）——ekit 拆分时中间件留在 middleware/hmw 仓，#51。logx 的 `Ctx*` 方法自动读取 |
 | `httpotel` | net/http 插桩（`Transport()` / `WrapTransport`） |
 | `redisotel` | go-redis 插桩（`InstrumentTracing`） |
 | `gormotel` | GORM 插桩插件（`NewPlugin`，`db.Use` 显式挂载） |
