@@ -1,3 +1,10 @@
+## [v0.3.4] — 2026-11-06
+
+- **BREAKING** fix(init): 重 Init 的旧 provider 关闭与全局替换对称化（[#50](https://github.com/oekit/tracing/issues/50)、[#52](https://github.com/oekit/tracing/issues/52)）——此前 `prev.Shutdown` 无条件执行，而 `otel.SetMeterProvider` 仅在本次产出 meterProvider 时才调用：重 Init 传 `DisableMetrics=true` 或 Endpoint="" 时全局 MeterProvider 仍指向旧实例却被关闭——打点零报错、导出静默全灭（与 v0.3.2 承诺「DisableMetrics=true ⇒ 全局 MeterProvider 保持原样」在重开场景相反）。修法：关闭对称化——本次也装了 meterProvider（全局已替换）才整体 Shutdown 旧 provider；否则只关 tracerProvider，旧 meterProvider 继续导出
+- docs(traceid): README/doc.go 指向真实中间件位置（[#51](https://github.com/oekit/tracing/issues/51)）——两处宣称的 `traceid.Middleware()` 在本包不存在（按快速上手写 `h.Use(traceid.Middleware()...)` 直接编译失败）：正身在 oekit/middleware 的 hmw 标准栈（ekit 拆分时中间件留在 middleware 仓）。本包导出面 Key/HeaderKey/IDLength/ContextWith/FromContext 不变
+
+关联问题单：tracing#50、tracing#51、tracing#52。
+
 ## [v0.3.3] — 2026-11-06
 
 - build: 矩阵依赖地板对齐（维护轮 #233）

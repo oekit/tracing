@@ -149,10 +149,20 @@ func Init(cfg Config) (Provider, error) {
 	otel.SetTextMapPropagator(defaultPropagator())
 
 	// 关闭被本次 Init 替换的旧 provider（其已不再被全局引用，继续运行只会泄漏）
+	// ⚠️ 关闭必须与全局替换**对称**（#50/#52）：本次未产出 meterProvider
+	//（Endpoint 为空 / DisableMetrics=true）时全局 MeterProvider 仍指向旧实例，
+	// 无条件 prev.Shutdown 会把仍被全局引用的旧 meterProvider 关掉——打点零报
+	// 错、导出静默全灭。修法：仅当本次也装了 meterProvider（全局已替换）才
+	// 关闭旧的 meter 面；tracer 面始终被本次替换，照常关闭。
 	if prev := installed.Swap(p); prev != nil {
 		abandonCtx, cancel := context.WithTimeout(context.Background(), abandonShutdownTimeout)
 		defer cancel()
-		_ = prev.Shutdown(abandonCtx) // 旧 provider 已被替换，这里尽力关闭即可
+		if p.meterProvider != nil {
+			_ = prev.Shutdown(abandonCtx) // 旧 provider 已被替换，这里尽力关闭即可
+		} else {
+			// 本次未替换 meter 面：仅关 tracer，保留旧 meterProvider 继续导出
+			_ = prev.tracerProvider.Shutdown(abandonCtx)
+		}
 	}
 	return p, nil
 }

@@ -13,7 +13,7 @@
 // 用法:
 //
 //	// 注册中间件链（生成 + 桥接）
-//	h.Use(traceid.Middleware()...)
+//	// 中间件正身在 oekit/middleware 的 hmw 标准栈（本包只提供 key/提取原语）
 //
 //	// 在 service 层提取（用于日志关联）
 //	traceID := traceid.FromContext(ctx)
