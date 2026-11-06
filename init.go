@@ -150,7 +150,7 @@ func Init(cfg Config) (Provider, error) {
 
 	// 关闭被本次 Init 替换的旧 provider（其已不再被全局引用，继续运行只会泄漏）
 	// ⚠️ 关闭必须与全局替换**对称**（#50/#52）：本次未产出 meterProvider
-	//（Endpoint 为空 / DisableMetrics=true）时全局 MeterProvider 仍指向旧实例，
+	// （Endpoint 为空 / DisableMetrics=true）时全局 MeterProvider 仍指向旧实例，
 	// 无条件 prev.Shutdown 会把仍被全局引用的旧 meterProvider 关掉——打点零报
 	// 错、导出静默全灭。修法：仅当本次也装了 meterProvider（全局已替换）才
 	// 关闭旧的 meter 面；tracer 面始终被本次替换，照常关闭。
