@@ -1,3 +1,11 @@
+## [v0.3.5] — 2026-11-07
+
+- docs(init): re-Init 对称关闭语义文档化 + #58 场景回归钉——空 Endpoint 时全局 Meter 不再指向已 Shutdown 实例（该缺陷已随 v0.3.4 修复，本轮钉住契约）（#58）
+- fix(init): validateSampleRate——负值/NaN 报错、0 值 WARN「=全量采样」——配置写错不再静默变成 100% 成本暴涨（#59）
+- docs: obs.WithTracing 空 Endpoint 什么都不装的缺口在 bootstrap/obs 侧修复（PR #106：本地 provider+传播器照装、WARN 点明未启用导出），本仓文档交叉声明（#60）
+
+关联问题单：tracing#58、tracing#59、tracing#60。
+
 ## [v0.3.4] — 2026-11-06
 
 - **BREAKING** fix(init): 重 Init 的旧 provider 关闭与全局替换对称化（[#50](https://github.com/oekit/tracing/issues/50)、[#52](https://github.com/oekit/tracing/issues/52)）——此前 `prev.Shutdown` 无条件执行，而 `otel.SetMeterProvider` 仅在本次产出 meterProvider 时才调用：重 Init 传 `DisableMetrics=true` 或 Endpoint="" 时全局 MeterProvider 仍指向旧实例却被关闭——打点零报错、导出静默全灭（与 v0.3.2 承诺「DisableMetrics=true ⇒ 全局 MeterProvider 保持原样」在重开场景相反）。修法：关闭对称化——本次也装了 meterProvider（全局已替换）才整体 Shutdown 旧 provider；否则只关 tracerProvider，旧 meterProvider 继续导出
