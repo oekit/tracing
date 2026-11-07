@@ -1,3 +1,7 @@
+## [v0.3.6] — 2026-11-08
+
+- build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）
+
 ## [v0.3.5] — 2026-11-07
 
 - docs(init): re-Init 对称关闭语义文档化 + #58 场景回归钉——空 Endpoint 时全局 Meter 不再指向已 Shutdown 实例（该缺陷已随 v0.3.4 修复，本轮钉住契约）（#58）
