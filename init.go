@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/oekit/logx"
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	b3prop "go.opentelemetry.io/contrib/propagators/b3"
 	otprop "go.opentelemetry.io/contrib/propagators/ot"
@@ -21,6 +23,10 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 )
+
+// tlog 是本包的结构化日志出口（Delegating 懒解析：消费方 SetDefault 后
+// 自动跟随）。
+var tlog = logx.Delegating("tracing")
 
 // metricExportInterval 是 OTLP 指标周期读取器的读取间隔（与旧
 // obs-opentelemetry/provider 的 15s 默认值一致）。
@@ -71,8 +77,10 @@ type Config struct {
 
 	// SampleRate 采样率，0.0~1.0。
 	// 0 < SampleRate < 1.0 时启用 ParentBased(TraceIDRatioBased) 采样；
-	// SampleRate >= 1.0 或 <= 0 均为全量采样（默认 1.0）——<=0 沿用旧版
-	// "静默全量" 语义，不视为错误。
+	// SampleRate >= 1.0 或 == 0 均为全量采样——0 会打 WARN 说明「=全量」
+	// （运维把采样率写成 0 常是想要「不采样」或「用默认」，静默全量在
+	// 高 QPS 服务上表现为成本暴涨，#59）；负值/NaN 直接报错，不再静默
+	// 全量（与「未知 Protocol 直接报错不静默回落」同一设计哲学）。
 	SampleRate float64
 
 	// Protocol 导出协议：ProtocolGRPC（缺省）/ ProtocolHTTP。
@@ -114,15 +122,29 @@ type Config struct {
 //   - Propagator: B3 + OpenTracing + W3C TraceContext + Baggage（与旧
 //     hertz-contrib/obs-opentelemetry/provider 的默认组合一致）
 //   - 采样: 0 < SampleRate < 1.0 → ParentBased(TraceIDRatioBased(rate))；
-//     SampleRate >= 1.0 或 <= 0 → 全量采样
+//     SampleRate >= 1.0 或 == 0 → 全量采样（0 会打 WARN 提示显式写 1.0）；
+//     负值/NaN 是配置错误，直接报错（不静默全量）
 //   - Endpoint 非空时同时初始化 OTLP Metrics（15s 周期读取 + runtime 指标）；
 //     Endpoint 为空时跳过导出器初始化，不产生网络连接
 //   - 导出协议由 Config.Protocol 选：grpc（缺省）/ http。**两条分支的全局
 //     副作用完全相同**——传播器、指标、旧 provider 关闭都不因换协议而丢失
-//   - 重复调用 Init 会自动关闭上一个 provider 后再安装新 provider；
-//     被替换 provider 的原持有方再调用 Shutdown 会得到 already-shutdown
-//     类错误，可安全忽略。常规服务应只 Init 一次
+//   - 重复调用 Init 会替换全局 provider 并自动关闭被替换的旧 provider，
+//     但关闭与全局替换**对称**（#50/#52/#58）：本次未产出 meterProvider
+//     （Endpoint 为空 / DisableMetrics=true）时，旧的 MeterProvider 不关闭、
+//     继续持有全局位导出——全局 otel.GetMeterProvider() 永远指向活实例，
+//     不会出现指向已 Shutdown 僵尸实例的窗口。被替换 provider 的原持有方
+//     再调用 Shutdown 会得到 already-shutdown 类错误，可安全忽略。
+//     常规服务应只 Init 一次
 func Init(cfg Config) (Provider, error) {
+	if err := validateSampleRate(cfg.SampleRate); err != nil {
+		return nil, err
+	}
+	if cfg.SampleRate == 0 {
+		tlog.Warn("SampleRate=0 按全量采样处理（不是「不采样」也不是「用默认」）；"+
+			"确认要全量请显式写 1.0，要按比例采样请写 0<r<1.0",
+			"sample_rate", cfg.SampleRate, "service", cfg.ServiceName)
+	}
+
 	sampler := buildSampler(cfg.SampleRate)
 	res := newResource(cfg)
 
@@ -254,12 +276,26 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 
 // buildSampler 将 SampleRate 转换为采样器。
 // 0 < rate < 1.0 → ParentBased(TraceIDRatioBased(rate))，尊重上游采样决策；
-// rate >= 1.0 或 <= 0 → AlwaysSample（全量采样）。
+// rate >= 1.0 或 == 0 → AlwaysSample（全量采样）。
+// 负值/NaN 由 Init 的 validateSampleRate 拒绝（#59），不会走到这里；
+// 本函数保持全定义域可用的纯映射。
 func buildSampler(rate float64) sdktrace.Sampler {
 	if rate > 0 && rate < 1.0 {
 		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(rate))
 	}
 	return sdktrace.AlwaysSample()
+}
+
+// validateSampleRate 校验采样率配置（#59）。
+// 负值与 NaN 是配置错误（YAML 类型写错/单位写错的高频产物），直接报错：
+// 静默按全量采样会把配置笔误表现为「线上成本暴涨」而非「启动报错」，
+// 与 resolveProtocol 对未知协议「报错不静默回落」的哲学一致。
+// 0 不报错（零值缺省语义保持全量），但 Init 会打 WARN 点明「=全量采样」。
+func validateSampleRate(rate float64) error {
+	if math.IsNaN(rate) || rate < 0 {
+		return fmt.Errorf("tracing: invalid SampleRate %v (want 0.0~1.0; 0 与 >=1.0 均为全量采样，负值/NaN 是配置错误)", rate)
+	}
+	return nil
 }
 
 // defaultPropagator 返回全局传播器组合。

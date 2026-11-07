@@ -34,12 +34,16 @@
 //     导出器、不发起网络连接（仅安装本地 provider）
 //   - Insecure: 是否跳过 TLS（本地开发用 true，生产用 false）
 //   - SampleRate: 采样率，0.0~1.0；0 < SampleRate < 1.0 时启用
-//     ParentBased(TraceIDRatioBased)，其余（含 <= 0）为全量采样
+//     ParentBased(TraceIDRatioBased)，0 与 >=1.0 为全量采样（0 会打 WARN
+//     提示显式写 1.0）；负值/NaN 直接报错，不静默全量
 //
 // # 重复调用
 //
-// Init 会安装全局 provider；重复调用会自动关闭上一个被替换的 provider
-// 后再安装新实例。常规服务应只 Init 一次（bootstrap 已保证）。
+// Init 会安装全局 provider；重复调用会替换全局实例并自动关闭被替换的旧
+// provider——但关闭与全局替换**对称**：本次未产出 meterProvider（Endpoint
+// 为空 / DisableMetrics=true）时旧的 MeterProvider 不关闭、继续持有全局位
+// 导出，全局 otel.GetMeterProvider() 永远指向活实例。常规服务应只 Init
+// 一次（bootstrap 已保证）。
 //
 // # 与 bootstrap 集成
 //
