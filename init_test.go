@@ -2,13 +2,19 @@ package tracing
 
 import (
 	"context"
+	"errors"
+	"math"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/oekit/logx"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
@@ -237,4 +243,132 @@ func TestInit_DefaultExportsMetrics(t *testing.T) {
 		t.Fatal("默认行为未导出 metrics（全局 MeterProvider 未被替换）——既有调用方行为面被改了")
 	}
 	_ = p.Shutdown(context.Background())
+}
+
+// TestInit_ReInitEmptyEndpoint_GlobalMeterStaysAlive 钉住 #58：第一次
+// Init(Endpoint!="") 安装全局 MeterProvider 后，第二次 Init(Endpoint=="")
+// 不得把该实例 Shutdown 成僵尸——全局 otel.GetMeterProvider() 必须永远指向
+// 活实例（业务打点不能静默丢弃且无法恢复）。
+// v0.3.4（#50/#52）已把旧 provider 的关闭改为与全局替换对称；本测试是
+// 该语义在 #58 场景（Endpoint 非空→空）下的回归钉。
+func TestInit_ReInitEmptyEndpoint_GlobalMeterStaysAlive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exporter test in -short mode: shutdown flush may attempt network")
+	}
+	before := otel.GetMeterProvider()
+
+	p1, err := Init(Config{ServiceName: "svc-a", Endpoint: "localhost:4317", Insecure: true})
+	if err != nil {
+		t.Fatalf("first Init() error: %v", err)
+	}
+	mp1 := otel.GetMeterProvider()
+	if mp1 == before {
+		t.Fatal("first Init did not install a global MeterProvider")
+	}
+
+	// #58 场景：Endpoint 从非空改为空（测试/本地模式切换）
+	p2, err := Init(Config{ServiceName: "svc-b"})
+	if err != nil {
+		t.Fatalf("second Init() error: %v", err)
+	}
+
+	// 断言 1：全局 MeterProvider 仍指向第一次 Init 安装的实例（未被替换）
+	if got := otel.GetMeterProvider(); got != mp1 {
+		t.Fatalf("re-Init with empty Endpoint replaced global MeterProvider: %T != %T", got, mp1)
+	}
+
+	// 断言 2：该实例仍是活的（没有被第二次 Init 关成僵尸）。
+	// PeriodicReader 被 Shutdown 后再次 Shutdown 会立即返回 ErrReaderShutdown；
+	// 活实例的 Shutdown 走真实 flush（对不可达端点表现为连接/超时错误，
+	// 而非 ErrReaderShutdown）。
+	impl1, ok := p1.(*providerImpl)
+	if !ok || impl1.meterProvider == nil {
+		t.Fatalf("first provider has no meter provider: %T", p1)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := impl1.meterProvider.Shutdown(ctx); err != nil && errors.Is(err, metric.ErrReaderShutdown) {
+		t.Fatalf("global MeterProvider was shut down by re-Init (zombie state): %v", err)
+	}
+
+	// 清理：第二个 provider 是本地 provider，关闭无网络副作用
+	_ = p2.Shutdown(context.Background())
+}
+
+// TestInit_NegativeSampleRateRejected 钉住 #59：负采样率是配置错误，
+// 直接报错而非静默全量——静默会把「采样率写错」表现为「线上成本暴涨」。
+// 校验先于任何全局副作用，无网络动作，不需要 -short 守卫。
+func TestInit_NegativeSampleRateRejected(t *testing.T) {
+	_, err := Init(Config{ServiceName: "svc", SampleRate: -0.1})
+	if err == nil {
+		t.Fatal("Init with negative SampleRate must return an error")
+	}
+	if !strings.Contains(err.Error(), "SampleRate") {
+		t.Errorf("error should mention SampleRate, got: %v", err)
+	}
+}
+
+// TestInit_NaNSampleRateRejected NaN 同负值：配置错误报错（YAML 类型写错的
+// 高频产物），不静默全量。
+func TestInit_NaNSampleRateRejected(t *testing.T) {
+	if _, err := Init(Config{ServiceName: "svc", SampleRate: math.NaN()}); err == nil {
+		t.Fatal("Init with NaN SampleRate must return an error")
+	}
+}
+
+// warnCapture 捕获 Warn 事件的记录型 Logger（其余方法经嵌入接口兜底，
+// 测试保证不会触达）。
+type warnCapture struct {
+	logx.Logger
+	mu    sync.Mutex
+	warns []string
+}
+
+func (w *warnCapture) Warn(msg string, _ ...any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.warns = append(w.warns, msg)
+}
+
+func (w *warnCapture) WithAttrs(_ ...logx.Attr) logx.Logger { return w }
+
+// TestInit_ZeroSampleRate_WarnsAndSucceeds 钉住 #59 的 0 值语义：
+// SampleRate=0（含零值缺省）不报错、按全量采样，但必须打 WARN 点明
+// 「=全量采样」——运维把采样率写成 0 常是想要「不采样」或「用默认」，
+// 静默全量在高 QPS 服务上成本陡增且无线索。
+func TestInit_ZeroSampleRate_WarnsAndSucceeds(t *testing.T) {
+	cap := &warnCapture{}
+	orig := logx.Default()
+	logx.SetDefault(cap)
+	t.Cleanup(func() { logx.SetDefault(orig) })
+
+	p, err := Init(Config{ServiceName: "svc-zero", SampleRate: 0})
+	if err != nil {
+		t.Fatalf("SampleRate=0 must not error, got: %v", err)
+	}
+	if p == nil {
+		t.Fatal("Init() returned nil provider")
+	}
+
+	cap.mu.Lock()
+	warns := len(cap.warns)
+	cap.mu.Unlock()
+	if warns == 0 {
+		t.Fatal("SampleRate=0 must emit a WARN explaining it means full sampling")
+	}
+	_ = p.Shutdown(context.Background())
+}
+
+// TestValidateSampleRate 单元钉住校验函数的边界。
+func TestValidateSampleRate(t *testing.T) {
+	for _, rate := range []float64{0, 0.5, 1, 1.5} {
+		if err := validateSampleRate(rate); err != nil {
+			t.Errorf("validateSampleRate(%v) = %v, want nil", rate, err)
+		}
+	}
+	for _, rate := range []float64{-0.001, -1, math.NaN(), math.Inf(-1)} {
+		if err := validateSampleRate(rate); err == nil {
+			t.Errorf("validateSampleRate(%v) = nil, want error", rate)
+		}
+	}
 }
