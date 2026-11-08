@@ -1,3 +1,9 @@
+## [v0.3.8] — 2026-11-09
+
+- fix(gormotel): db.system 映射补 postgres/sqlserver/mariadb/oracle/clickhouse，未知方言落 other_sql（#78）
+
+关联问题单：tracing#78。
+
 ## [v0.3.7] — 2026-11-08
 
 - fix(init): re-Init「metrics on→off→on」不再永久孤儿化第一个 on 的 MeterProvider（#68）——installed 只沿单链追踪最近一任 impl，off 的 Init 产出不了 meterProvider（#52 语义下旧 meter 面继续持有全局位导出），第二个 on 替换全局后第一个 on 的 meterProvider 彻底无人引用：周期读取器（15s）与 runtime collector 每 15s 向旧 endpoint 导出直到进程结束（ghost 指标流 + 泄漏 goroutine）；修复为 meter 面单独追踪「最近产出 meterProvider 的 Init」链（lastMeterProvider），本次装了 meterProvider 时关掉上一个持 meterProvider 的 impl 的 meter 面（shutdownOnce 幂等）；#52「未替换 meter 面时谁都不许关」语义不变
