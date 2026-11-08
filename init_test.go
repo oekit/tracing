@@ -372,3 +372,63 @@ func TestValidateSampleRate(t *testing.T) {
 		}
 	}
 }
+
+// TestInit_ReInitOnOffOn_ClosesOrphanedMeterProvider 钉住 #68：re-Init
+// 「metrics on→off→on」序列不得把第一个 on 的 MeterProvider 永久孤儿化。
+// off 的 Init 产出不了 meterProvider，按 #52 语义第一个 on 的 meterProvider
+// 继续持有全局位导出（必须活着）；但第二个 on 替换全局 meter 面之后，它在
+// installed 单链上彻底无人引用——周期读取器（15s）与 runtime collector 每
+// 15s 向旧 endpoint 导出直到进程结束（ghost 指标流 + 泄漏 goroutine）。
+// 修复：meter 面单独追踪「上一个产出 meterProvider 的 impl」
+// （lastMeterProvider 链），本次装了 meterProvider 时关掉它的 meter 面。
+//
+// 判据两半：
+//  1. 白盒归因——off 那步之后 lastMeterProvider 仍指向第一个 impl（#52：
+//     没人能关它），第二个 on 之后指向第三个 impl（关闭动作发生在这一步）；
+//  2. 黑盒活体——第三个 Init 之后，第一个 impl 的 meterProvider 已是
+//     已 Shutdown 态：重复 Shutdown 立即返回 ErrReaderShutdown（活实例的
+//     Shutdown 走真实 flush，对不可达端点是连接错误而非 ErrReaderShutdown，
+//     与 TestInit_ReInitEmptyEndpoint_GlobalMeterStaysAlive 同款判据）。
+func TestInit_ReInitOnOffOn_ClosesOrphanedMeterProvider(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exporter test in -short mode: shutdown flush may attempt network")
+	}
+	pa, err := Init(Config{ServiceName: "svc-a", Endpoint: "localhost:4317", Insecure: true}) // ON
+	if err != nil {
+		t.Fatalf("first Init() error: %v", err)
+	}
+	implA, ok := pa.(*providerImpl)
+	if !ok || implA.meterProvider == nil {
+		t.Fatalf("first provider has no meter provider: %T", pa)
+	}
+	ma := otel.GetMeterProvider()
+
+	// OFF：DisableMetrics ⇒ 产出不了 meterProvider，#52 语义下全局位与活体都不变
+	pb, err := Init(Config{ServiceName: "svc-b", Endpoint: "localhost:4317", Insecure: true, DisableMetrics: true})
+	if err != nil {
+		t.Fatalf("second Init() error: %v", err)
+	}
+	if got := otel.GetMeterProvider(); got != ma {
+		t.Fatalf("DisableMetrics 的 Init 替换了全局 MeterProvider（违背 #52）: %T != %T", got, ma)
+	}
+	if lastMeterProvider.Load() != implA {
+		t.Fatal("OFF 那步不得移动 lastMeterProvider 追踪位——此时全局 meter 面仍是 implA 的")
+	}
+
+	// ON again：替换全局 meter 面 ⇒ 必须把 implA 的 meter 面一并收掉（#68）
+	pc, err := Init(Config{ServiceName: "svc-c", Endpoint: "localhost:4317", Insecure: true})
+	if err != nil {
+		t.Fatalf("third Init() error: %v", err)
+	}
+	defer func() { _ = pc.Shutdown(context.Background()) }()
+	_ = pb.Shutdown(context.Background())
+	if lastMeterProvider.Load() != pc.(*providerImpl) {
+		t.Fatal("第二个 on 之后 lastMeterProvider 应指向最新产出 meterProvider 的 impl")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := implA.meterProvider.Shutdown(ctx); !errors.Is(err, metric.ErrReaderShutdown) {
+		t.Fatalf("第一个 on 的 MeterProvider 在 on→off→on 后未被关闭（#68 孤儿导出）: err=%v, want ErrReaderShutdown", err)
+	}
+}

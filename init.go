@@ -39,7 +39,22 @@ const abandonShutdownTimeout = 5 * time.Second
 // 再次 Init 会替换全局 TracerProvider/MeterProvider，被替换的旧 provider
 // 若不主动关闭，其批量 span 处理器与 OTLP 导出器会随进程泄漏，
 // 因此在新 Init 成功后自动关闭上一个 provider。
+// ⚠️ 只沿这一条单链追踪**不够**关 meter 面（#68）：未产出 meterProvider 的
+// Init（Endpoint 空 / DisableMetrics）按 #52 语义保留旧 meterProvider 活着
+// 继续导出 ⇒ 单链上没有它的位置，等下一个产出 meterProvider 的 Init 替换
+// 全局后，它就彻底无人引用了——meter 面另见 lastMeterProvider 链。
 var installed atomic.Pointer[providerImpl]
+
+// lastMeterProvider 单独追踪「最近一次**产出 meterProvider** 的 Init」
+// （#68）：meter 面的关闭判据不能挂在 installed 单链上——
+// 「metrics on→off→on」序列里，off 的 impl 没有 meterProvider（#52 语义下
+// 第一个 on 的 meterProvider 仍持有全局位、必须活着），若只沿 installed
+// 追踪，第二个 on 替换全局 meter 面后第一个 on 的 meterProvider 永久孤儿：
+// 周期读取器（15s）与 runtime collector 每 15s 向旧 endpoint 导出直到进程
+// 结束（ghost 指标流 + 泄漏 goroutine）。本次 Init 装了 meterProvider
+// （= 全局 meter 面被本次替换）时，沿本链把上一个持 meterProvider 的 impl
+// 的 meter 面关掉（shutdownOnce 幂等，重复关闭无害）。
+var lastMeterProvider atomic.Pointer[providerImpl]
 
 // Provider 是 tracing provider 的最小接口，仅暴露 Shutdown 能力。
 // 用于解耦调用方对具体 OTel SDK 实现的直接依赖。
@@ -129,12 +144,14 @@ type Config struct {
 //   - 导出协议由 Config.Protocol 选：grpc（缺省）/ http。**两条分支的全局
 //     副作用完全相同**——传播器、指标、旧 provider 关闭都不因换协议而丢失
 //   - 重复调用 Init 会替换全局 provider 并自动关闭被替换的旧 provider，
-//     但关闭与全局替换**对称**（#50/#52/#58）：本次未产出 meterProvider
+//     但关闭与全局替换**对称**（#50/#52/#58/#68）：本次未产出 meterProvider
 //     （Endpoint 为空 / DisableMetrics=true）时，旧的 MeterProvider 不关闭、
 //     继续持有全局位导出——全局 otel.GetMeterProvider() 永远指向活实例，
 //     不会出现指向已 Shutdown 僵尸实例的窗口。被替换 provider 的原持有方
 //     再调用 Shutdown 会得到 already-shutdown 类错误，可安全忽略。
-//     常规服务应只 Init 一次
+//     meter 面的关闭沿「最近产出 meterProvider 的 Init」链追踪（#68）：
+//     「on→off→on」序列中第一个 on 的 MeterProvider 会在第二个 on 替换
+//     全局后被关闭，不再永久孤儿导出。常规服务应只 Init 一次
 func Init(cfg Config) (Provider, error) {
 	if err := validateSampleRate(cfg.SampleRate); err != nil {
 		return nil, err
@@ -171,19 +188,24 @@ func Init(cfg Config) (Provider, error) {
 	otel.SetTextMapPropagator(defaultPropagator())
 
 	// 关闭被本次 Init 替换的旧 provider（其已不再被全局引用，继续运行只会泄漏）
-	// ⚠️ 关闭必须与全局替换**对称**（#50/#52）：本次未产出 meterProvider
-	// （Endpoint 为空 / DisableMetrics=true）时全局 MeterProvider 仍指向旧实例，
-	// 无条件 prev.Shutdown 会把仍被全局引用的旧 meterProvider 关掉——打点零报
-	// 错、导出静默全灭。修法：仅当本次也装了 meterProvider（全局已替换）才
-	// 关闭旧的 meter 面；tracer 面始终被本次替换，照常关闭。
+	// ⚠️ 关闭必须与全局替换**对称**（#50/#52），且 tracer / meter 两面**分链
+	// 追踪**（#68）：
+	//   - tracer 面始终被本次替换 ⇒ 上一任 impl 的 tracerProvider 照常关闭；
+	//   - meter 面：本次未产出 meterProvider（Endpoint 为空 / DisableMetrics=true）
+	//     时全局 MeterProvider 仍指向旧实例，谁都不能关（#52）；本次产出时，
+	//     要关的是**上一个产出 meterProvider 的 impl**（lastMeterProvider 链）
+	//     ——不是上一任 impl：on→off→on 序列里上一任（off）没有 meter 面，
+	//     真正被替换出局的是更早那个 on 的 meterProvider（#68 孤儿）。
 	if prev := installed.Swap(p); prev != nil {
 		abandonCtx, cancel := context.WithTimeout(context.Background(), abandonShutdownTimeout)
 		defer cancel()
-		if p.meterProvider != nil {
-			_ = prev.Shutdown(abandonCtx) // 旧 provider 已被替换，这里尽力关闭即可
-		} else {
-			// 本次未替换 meter 面：仅关 tracer，保留旧 meterProvider 继续导出
-			_ = prev.tracerProvider.Shutdown(abandonCtx)
+		_ = prev.tracerProvider.Shutdown(abandonCtx) // tracer 面始终被本次替换
+	}
+	if p.meterProvider != nil {
+		if prevMP := lastMeterProvider.Swap(p); prevMP != nil && prevMP.meterProvider != nil {
+			abandonCtx, cancel := context.WithTimeout(context.Background(), abandonShutdownTimeout)
+			defer cancel()
+			_ = prevMP.meterProvider.Shutdown(abandonCtx) // 已出局，尽力关闭即可
 		}
 	}
 	return p, nil
