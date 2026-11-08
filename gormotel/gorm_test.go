@@ -9,6 +9,8 @@ import (
 	"github.com/glebarez/sqlite"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -152,4 +154,90 @@ func TestOtelPlugin_StackTrace_NotPanic(t *testing.T) {
 	}
 	_ = db.Exec("SELECT 1").Error
 	_ = gorm.ErrRecordNotFound // 防止 unused import
+}
+
+// renameDialector 包装真实的 sqlite Dialector，只改写 Name() 的返回值
+// ——让 gorm.Open 照常工作（真连接池/真 SQL 执行），而插件视角的
+// 方言名是任意指定值。#78 的映射表用例靠它模拟 postgres/sqlserver/
+// 未知方言，无需真 PG/MSSQL 实例。
+type renameDialector struct {
+	gorm.Dialector
+	name string
+}
+
+func (d renameDialector) Name() string { return d.name }
+
+// newTestDBWithDialectName 打开一个「方言名被改写」的 sqlite 内存 DB，
+// 并挂上写本地 InMemoryExporter 的插件。
+func newTestDBWithDialectName(t *testing.T, name string) (*gorm.DB, *tracetest.InMemoryExporter) {
+	t.Helper()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	dsn := "file:gormotel-" + strconv.FormatInt(testDBSeq.Add(1), 10) + "?mode=memory&cache=shared"
+	db, err := gorm.Open(renameDialector{Dialector: sqlite.Open(dsn), name: name}, &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	if err := db.Use(NewPlugin(WithTracerProvider(tp))); err != nil {
+		t.Fatal(err)
+	}
+	return db, exp
+}
+
+// TestOtelPlugin_DBSystemMapping 是 #78 的回归钉：db.system 映射表必须
+// 覆盖 postgres 等常见方言（此前 postgres/sqlserver 静默丢维度），未知
+// 方言回落 other_sql（至少留下「这是一个 SQL 方言」的事实），方言名
+// 大小写不敏感。假 Dialector（内嵌 sqlite、改写 Name()）走真实执行路径，
+// 用 tracetest 导出器抓 span 断言属性在场。
+func TestOtelPlugin_DBSystemMapping(t *testing.T) {
+	cases := []struct {
+		dialect string
+		want    string
+	}{
+		{dialect: "postgres", want: "postgresql"},
+		{dialect: "sqlserver", want: "mssql"}, // semconv v1.26.0 的 SQL Server 值
+		{dialect: "mysql", want: "mysql"},
+		{dialect: "sqlite", want: "sqlite"},
+		{dialect: "weird-db", want: "other_sql"}, // 未知方言回落 other_sql，不再丢维度
+		{dialect: "MySQL", want: "mysql"},        // 方言名大小写不敏感
+	}
+	for _, tc := range cases {
+		t.Run(tc.dialect, func(t *testing.T) {
+			db, exp := newTestDBWithDialectName(t, tc.dialect)
+
+			type item struct {
+				ID   int64
+				Name string
+			}
+			_ = db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)").Error
+			if err := db.Create(&item{ID: 1, Name: "x"}).Error; err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			spans := exp.GetSpans()
+			if len(spans) == 0 {
+				t.Fatal("expected spans to be exported, got 0")
+			}
+			for _, span := range spans {
+				var got string
+				for _, kv := range span.Attributes {
+					if kv.Key == attribute.Key("db.system") {
+						got = kv.Value.AsString()
+					}
+				}
+				if got != tc.want {
+					t.Errorf("span %q: db.system = %q, want %q", span.Name, got, tc.want)
+				}
+			}
+		})
+	}
 }

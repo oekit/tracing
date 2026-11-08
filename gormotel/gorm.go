@@ -226,14 +226,36 @@ func (p *otelPlugin) after() gormHookFunc {
 	}
 }
 
+// dbSystem 把 GORM 方言名映射为 OTel 约定的 db.system 值（#78）。
+//
+// 此前只认 mysql/sqlite，postgres 等方言一律返回零值、被 after 钩子
+// 的 Valid() 静默跳过——span 照常产出，唯独缺 db.system 维度，且无
+// 任何日志/报错可循（「面板少一块」与「没人访问」无法区分）。
+//
+// 映射按 semconv v1.26.0 的 DBSystem 枚举对照 GORM 方言名（gorm.io/driver
+// 各 Dialector 的 Name() 返回值）；未识别的方言回落 DBSystemOtherSQL
+// ——至少留下「这是一个 SQL 方言」的事实，避免维度整片落空；
+// 仅空方言名（极少见）保持缺省。
 func dbSystem(tx *gorm.DB) attribute.KeyValue {
-	switch tx.Dialector.Name() { //nolint:staticcheck // QF1008: Name 是 Dialector 接口方法，无法继续化简
+	switch strings.ToLower(tx.Dialector.Name()) { //nolint:staticcheck // QF1008: Name 是 Dialector 接口方法，无法继续化简
 	case "mysql":
 		return semconv.DBSystemMySQL
+	case "mariadb":
+		return semconv.DBSystemMariaDB
+	case "postgres":
+		return semconv.DBSystemPostgreSQL
 	case "sqlite":
 		return semconv.DBSystemSqlite
-	default:
+	case "sqlserver":
+		return semconv.DBSystemMSSQL
+	case "oracle":
+		return semconv.DBSystemOracle
+	case "clickhouse":
+		return semconv.DBSystemClickhouse
+	case "":
 		return attribute.KeyValue{}
+	default:
+		return semconv.DBSystemOtherSQL
 	}
 }
 
