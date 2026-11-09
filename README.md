@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/tracing@v0.3.7
+go get github.com/oekit/tracing@v0.3.9
 ```
 
 ## 这个仓库做什么
