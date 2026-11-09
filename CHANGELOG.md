@@ -1,3 +1,9 @@
+## [v0.3.9] — 2026-11-09
+
+- docs(httpotel): Transport 契约改述——追踪唯一入口 WrapTransport（#79）
+
+关联问题单：tracing#79。
+
 ## [v0.3.8] — 2026-11-09
 
 - fix(gormotel): db.system 映射补 postgres/sqlserver/mariadb/oracle/clickhouse，未知方言落 other_sql（#78）
