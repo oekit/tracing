@@ -2,7 +2,9 @@ package gormotel
 
 import (
 	"context"
+	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -154,6 +156,25 @@ func TestOtelPlugin_StackTrace_NotPanic(t *testing.T) {
 	}
 	_ = db.Exec("SELECT 1").Error
 	_ = gorm.ErrRecordNotFound // 防止 unused import
+}
+
+// TestDoc_RowRowsSpanBoundaryDocumented 钉住 #101 的兜底契约：gorm 回调
+// 模型拿不到取数期时机——gorm.io/gorm 的 Row()/Rows() 对 Statement.Dest 做
+// *sql.Row / *sql.Rows 具体类型断言，插件无法包装返回值去延迟 span.End /
+// RecordError，因此 Row()/Rows() 的 span 只覆盖查询发起期：Scan/迭代期的
+// 错误与耗时不在 span 内、状态恒 Unset。包文档必须点明这一边界，否则
+// Scan 失败（ErrNoRows 等）会被错误归因为「DB 没问题」。
+func TestDoc_RowRowsSpanBoundaryDocumented(t *testing.T) {
+	docFile, err := os.ReadFile("doc.go")
+	if err != nil {
+		t.Fatalf("read doc.go: %v", err)
+	}
+	doc := string(docFile)
+	for _, want := range []string{"Row()", "Rows()", "查询发起", "Scan"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("gormotel/doc.go 未点明 Row()/Rows() 的 span 生命周期边界（缺 %q）——Scan/迭代期错误会全部丢失、被错误归因（#101）", want)
+		}
+	}
 }
 
 // renameDialector 包装真实的 sqlite Dialector，只改写 Name() 的返回值

@@ -135,6 +135,8 @@ func (p otelPlugin) Initialize(db *gorm.DB) (err error) {
 		{cb.Update().Before("gorm:update"), p.before("gorm.Update"), "before:update"},
 		{cb.Update().After("gorm:update"), p.after(), "after:update"},
 
+		// Row()/Rows() 的 span 只覆盖查询发起期（Scan/Close 时机在 gorm 回调
+		// 模型内不可观察，见包文档「span 生命周期边界」一节，#101）。
 		{cb.Row().Before("gorm:row"), p.before("gorm.Row"), "before:row"},
 		{cb.Row().After("gorm:row"), p.after(), "after:row"},
 

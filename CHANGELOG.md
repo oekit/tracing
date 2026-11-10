@@ -12,6 +12,10 @@
 
 关联问题单：oekit/tracing#100。
 
+- fix(gormotel): 文档点明 Row()/Rows() 的 span 生命周期边界（#101）——Row()/Rows() 的 span 在游标建立后即结束，Scan/迭代期错误与耗时全部丢失、span 状态恒 Unset（Scan 的 sql.ErrNoRows 不进 span，错误被归因为「DB 没问题」）；根因是 gorm 回调模型拿不到取数期时机（gorm.io/gorm 的 Row()/Rows() 对 Statement.Dest 做 *sql.Row / *sql.Rows 具体类型断言，插件无法包装返回值延迟 span.End 或在 Scan/Close 处 RecordError），按 issue 认可的兜底处置：包文档点明「span 只覆盖查询发起期」并给出覆盖取数期的替代路径（Scan()/Find()/First() 全程覆盖），契约测试钉住文档不再失实
+
+关联问题单：oekit/tracing#101。
+
 ## [v0.3.10] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）
