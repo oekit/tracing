@@ -8,6 +8,10 @@
 
 关联问题单：oekit/tracing#99。
 
+- fix(init): 并发 Init 加进程级互斥，全局 TracerProvider 不再可能指向已 Shutdown 僵尸（#100）——「Set* 装全局→Swap/关前任」是两步非原子序列且全程无锁，两个 goroutine 并发 Init 时 Set 顺序与 Swap 顺序相反（A.Set → B.Set → B.Swap → A.Swap）会让 A 的 Swap 拿到 pB 并将其 Shutdown，而全局位最后由 B.Set 写为 pB：之后所有业务 span 不再记录（IsRecording=false）且零报错；修复为包级 mutex 把「创建→Set*→Swap/关前任」整个临界区圈住，补并发 Init 回归测试（N 协程并发 Init 后断言全局 tracer 新 span 仍 IsRecording）
+
+关联问题单：oekit/tracing#100。
+
 ## [v0.3.10] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）

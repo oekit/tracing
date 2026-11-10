@@ -463,6 +463,53 @@ func TestInit_GRPCRejectsURLEndpoint(t *testing.T) {
 	}
 }
 
+// TestInit_ConcurrentInit_NoZombieGlobalProvider 钉住 #100：并发 Init 的
+// 「装全局（Set*）→ Swap/关前任」两步序列在无互斥时可交错成
+// A.Set → B.Set → B.Swap → A.Swap——A 的 Swap 拿到 pB 并将其 Shutdown，
+// 而全局位最后由 B.Set 写为 pB ⇒ 全局 TracerProvider 指向已 Shutdown 僵尸，
+// 之后所有业务 span 不再记录（IsRecording=false）且零报错。与 #50/#52/#58/#68
+// 的串行关闭不对称不同，本条根因是 Init 无互斥，修法是包级互斥把整个
+// 「创建→Set*→Swap/关前任」序列圈进临界区。
+//
+// 判据复用 issue #100 探针：N 协程并发 Init，每轮后断言全局 tracer 的新
+// span 仍 IsRecording。修复前为竞态复现（概率性命中，红输出见 PR 正文）；
+// 修复后互斥串行化 ⇒ 判据恒成立（确定性绿）。
+func TestInit_ConcurrentInit_NoZombieGlobalProvider(t *testing.T) {
+	const goroutines = 8
+	rounds := 4000
+	if testing.Short() {
+		rounds = 100
+	}
+	for round := range rounds {
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for range goroutines {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				p, ierr := Init(Config{ServiceName: "concurrent-svc", SampleRate: 1})
+				if ierr != nil {
+					t.Errorf("concurrent Init() error: %v", ierr)
+					return
+				}
+				// 不在此处 Shutdown：落选 provider 由 Swap 链自动关闭，
+				// 当前全局 provider 必须保持活体供下方判据。
+				_ = p
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		_, span := otel.Tracer("probe").Start(context.Background(), "probe")
+		recording := span.IsRecording()
+		span.End()
+		if !recording {
+			t.Fatalf("round %d: 并发 Init 后全局 TracerProvider 是已 Shutdown 僵尸（业务 span 静默全丢）", round)
+		}
+	}
+}
+
 // TestValidateGRPCEndpoint 单元钉住 gRPC 端点形态校验（#98）：合规 host:port
 // 放行；URL 形态（含 "://" 或 "/"）必须报错——URL 端点走 Protocol:"http"。
 func TestValidateGRPCEndpoint(t *testing.T) {

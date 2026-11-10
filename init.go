@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,14 @@ const abandonShutdownTimeout = 5 * time.Second
 // Init（Endpoint 空 / DisableMetrics）按 #52 语义保留旧 meterProvider 活着
 // 继续导出 ⇒ 单链上没有它的位置，等下一个产出 meterProvider 的 Init 替换
 // 全局后，它就彻底无人引用了——meter 面另见 lastMeterProvider 链。
+// initMu 是 Init 的进程级互斥（#100）：「创建→Set* 装全局→Swap/关前任」是
+// 两步非原子序列，并发 Init 时「Set 顺序」与「Swap 顺序」相反
+// （A.Set → B.Set → B.Swap → A.Swap）会让 A 的 Swap 拿到 pB 并将其 Shutdown，
+// 而全局位最后由 B.Set 写为 pB ⇒ 全局 TracerProvider 指向已 Shutdown 僵尸，
+// 之后所有业务 span 不再记录（IsRecording=false）且零报错。互斥把整个序列
+// 圈进临界区：并发 Init 串行化，全局位永远指向活实例。
+var initMu sync.Mutex
+
 var installed atomic.Pointer[providerImpl]
 
 // lastMeterProvider 单独追踪「最近一次**产出 meterProvider** 的 Init」
@@ -153,7 +162,12 @@ type Config struct {
 //     meter 面的关闭沿「最近产出 meterProvider 的 Init」链追踪（#68）：
 //     「on→off→on」序列中第一个 on 的 MeterProvider 会在第二个 on 替换
 //     全局后被关闭，不再永久孤儿导出。常规服务应只 Init 一次
+//   - 并发调用 Init 由包级互斥串行化（#100）：「创建→Set*→Swap/关前任」
+//     整个序列在临界区内，全局位不会因两步序列交错而指向已 Shutdown 僵尸
 func Init(cfg Config) (Provider, error) {
+	initMu.Lock()
+	defer initMu.Unlock()
+
 	if err := validateSampleRate(cfg.SampleRate); err != nil {
 		return nil, err
 	}
