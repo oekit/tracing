@@ -4,6 +4,10 @@
 
 关联问题单：oekit/tracing#98。
 
+- fix(init): parseOTLPHTTPEndpoint 显式拒绝 URL 的 query/fragment，不再静默丢弃（#99）——query token 型鉴权（?api_key= / ?token=）此前解析后凭空消失：Init 成功、导出请求到达后端却不带 token，后端 401/403、OTLP 重试耗尽数据全丢，而配置里的 token「明明配了」；修复为与内嵌凭据同一纪律——报错并指向 Config.Headers（query 里的密钥同样会进访问日志/代理日志），fragment 本就不会发给服务端、出现即配置错误，错误不回显端点内容
+
+关联问题单：oekit/tracing#99。
+
 ## [v0.3.10] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）

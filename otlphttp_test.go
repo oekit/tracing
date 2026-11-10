@@ -67,6 +67,32 @@ func TestParseOTLPHTTPEndpoint(t *testing.T) {
 	}
 }
 
+// TestParseOTLPHTTPEndpoint_RejectsQueryAndFragment 钉住 #99：URL 的
+// query/fragment 不得被静默丢弃。query token 型鉴权（?api_key= / ?token=）
+// 此前解析后凭空消失：Init 成功、导出请求到达后端但不带 token，后端 401、
+// OTLP 重试耗尽数据全丢，而配置里的 token「明明配了」。与内嵌凭据同一
+// 纪律——显式拒绝并指向 Config.Headers，不静默吞。
+func TestParseOTLPHTTPEndpoint_RejectsQueryAndFragment(t *testing.T) {
+	cases := []struct{ name, endpoint, noLeak string }{
+		{"query is rejected not dropped", "https://host/api/otel?key=SECRET-TOKEN", "SECRET-TOKEN"},
+		{"fragment is rejected not dropped", "https://host/api/otel#SECRET-FRAGMENT", "SECRET-FRAGMENT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseOTLPHTTPEndpoint(tc.endpoint, false)
+			if err == nil {
+				t.Fatalf("parseOTLPHTTPEndpoint(%q) error = nil, want error（query/fragment 被静默丢弃 ⇒ 导出 401 无线索）", tc.endpoint)
+			}
+			if !strings.Contains(err.Error(), "Headers") {
+				t.Errorf("error should point at Config.Headers, got: %v", err)
+			}
+			if strings.Contains(err.Error(), tc.noLeak) {
+				t.Errorf("error leaks endpoint content %q: %v", tc.noLeak, err)
+			}
+		})
+	}
+}
+
 // TestOTLPHTTPEndpoint_SignalPaths signal 路径推导：端点指到哪个 signal，
 // 另一个按同前缀换名；否则基址后拼标准路径。
 func TestOTLPHTTPEndpoint_SignalPaths(t *testing.T) {
