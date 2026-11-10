@@ -1,4 +1,4 @@
-## [Unreleased]
+## [v0.4.0] — 2026-11-11
 
 - fix(init): gRPC 分支校验 Endpoint 形态，URL 形态端点不再静默断供（#98）——cfg.Endpoint 此前原样交给 otlptracegrpc/otlpmetricgrpc：URL 形态（http://host:port、https://host:port、带路径）Init 成功返回 provider，但 grpc 拨号目标解析不出可用地址、一次都不连，span/metric 在后台导出重试里无声耗尽（「服务正常但 APM 全黑」）；修复为镜像 http 分支的校验哲学——Endpoint 含 "://" 或 "/" 直接报错，错误点名 host:port 期望形态并指向 URL 端点改设 Protocol:"http"，不回显端点原值（URL 可能内嵌凭据）
 
@@ -12,13 +12,15 @@
 
 关联问题单：oekit/tracing#100。
 
-- fix(gormotel): 文档点明 Row()/Rows() 的 span 生命周期边界（#101）——Row()/Rows() 的 span 在游标建立后即结束，Scan/迭代期错误与耗时全部丢失、span 状态恒 Unset（Scan 的 sql.ErrNoRows 不进 span，错误被归因为「DB 没问题」）；根因是 gorm 回调模型拿不到取数期时机（gorm.io/gorm 的 Row()/Rows() 对 Statement.Dest 做 *sql.Row / *sql.Rows 具体类型断言，插件无法包装返回值延迟 span.End 或在 Scan/Close 处 RecordError），按 issue 认可的兜底处置：包文档点明「span 只覆盖查询发起期」并给出覆盖取数期的替代路径（Scan()/Find()/First() 全程覆盖），契约测试钉住文档不再失实
+- fix(gormotel): Row()/Rows() 的 span 口径补齐 + 生命周期边界文档化（#101）——Row()/Rows() 的 span 在游标建立后即结束，Scan/迭代期错误与耗时全部丢失（Scan 的 sql.ErrNoRows 不进 span，错误被归因为「DB 没问题」）；本轮两半处置：①可捕获半边已修——Row 路径的**查询期**错误（语法错/连接断）此前落在返回的 *sql.Row 里（gorm 的 db.Error 看不见、span 恒 Unset），现经 Statement.ConnPool 包装层用 Row.Err()（database/sql 为包装方提供的只读访问器，不消费游标）记进 span，与 Query/Exec 路径口径合一（recordSpanError 统一判定，业务语义错误仍保持 Unset），实证「查询在游标建立时已真实执行」；②Scan/迭代/Close 期在 gorm 回调模型内不可观察（Row()/Rows() 对 Statement.Dest 做 *sql.Row / *sql.Rows 具体类型断言，插件无法包装返回值），包文档「span 生命周期边界」一节点明并给出覆盖取数期的替代路径（Scan()/Find()/First() 全程覆盖），契约测试钉住文档不再失实 + 行为测试钉住边界
 
 关联问题单：oekit/tracing#101。
 
-- fix(traceid): 包文档对齐实现——不再宣称包内不存在的「生成/桥接」能力（#102）——traceid/doc.go 第 1 行「生成、透传与提取」与用法注释「（生成 + 桥接）」、tracing/doc.go「traceid: trace_id 生成/提取/桥接」三处宣称，而实现面只有 Key/HeaderKey/IDLength 常量与 ContextWith/FromContext 存取（外加 init() 注册 logx 提取器），下游按文档找能力找不到、且文档自相矛盾；处置以实现为准改文档（issue 首选项）：两处文档如实描述为键/提取原语，生成/桥接标注归属 oekit/middleware 的 hmw 标准栈（补最小实现会制造第二真相源），契约测试钉住「宣称生成/桥接必须同行标注归属」
+- **feat(traceid)**: 「生成/桥接」能力落地为真实 API，文档三处宣称由「对齐实现」升级为「坐实能力」（#102）——`NewID()`（crypto/rand 驱动的 IDLength 位十六进制随机串，与既有 X-Trace-Id 的「UUID 前缀」形态一致；生成点唯一，hmw 标准栈与无框架入口都经此取新 ID，不留第二生成点）与 `FromSpanContext(sc)`（OTel SpanContext → trace_id 桥接：经 ContextWith 注入后日志 trace_id 与 APM trace 同源，双 ID 断轨闭合）；反方向（X-Trace-Id → SpanContext）不提供：12 位短 ID 不足 16 字节反推不出合法 OTel TraceID，跨进程恢复走 traceparent 由 OTel 传播器承担。新增公开 API ⇒ minor 升 v0.4.0
 
 关联问题单：oekit/tracing#102。
+
+现代语言特性贴合处：`for range int`（Go 1.22+，新增行为测试的确定性循环）。
 
 ## [v0.3.10] — 2026-11-10
 

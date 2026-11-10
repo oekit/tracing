@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/tracing
 
-> OpenTelemetry 追踪 + trace_id 真相源
-> 当前版本：`v0.3.10` · module：`github.com/oekit/tracing` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> OpenTelemetry 追踪 + trace_id 真相源（traceid 生成 NewID / 桥接 FromSpanContext 原语，v0.4.0 起）
+> 当前版本：`v0.4.0` · module：`github.com/oekit/tracing` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `./`、`gormotel/`、`httpotel/`、`redisotel/`、`traceid/`
