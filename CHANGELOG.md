@@ -1,3 +1,7 @@
+## [v0.3.10] — 2026-11-10
+
+- - build: 依赖地板对齐（floor sync，无代码变更）
+
 ## [v0.3.9] — 2026-11-09
 
 - docs(httpotel): Transport 契约改述——追踪唯一入口 WrapTransport（#79）
