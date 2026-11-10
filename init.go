@@ -88,7 +88,7 @@ type Config struct {
 	// Endpoint OTLP 端点。
 	//
 	// grpc 协议：host:port 形态，如 "otel-collector:4317"；URL 形态
-	//（含 "://" 或 "/"）直接报错（#98，URL 端点请设 Protocol:"http"）。
+	// （含 "://" 或 "/"）直接报错（#98，URL 端点请设 Protocol:"http"）。
 	// http 协议：接受完整 signal URL（"https://host/api/otel/v1/traces"）、
 	// 基址（"https://host"、"https://host/api/otel"）或无 scheme 的
 	// host:port（"otel-collector:4318"）；详见 otlphttp.go 的推导规则。
