@@ -1,3 +1,25 @@
+## [Unreleased]
+
+- fix(init): gRPC 分支校验 Endpoint 形态，URL 形态端点不再静默断供（#98）——cfg.Endpoint 此前原样交给 otlptracegrpc/otlpmetricgrpc：URL 形态（http://host:port、https://host:port、带路径）Init 成功返回 provider，但 grpc 拨号目标解析不出可用地址、一次都不连，span/metric 在后台导出重试里无声耗尽（「服务正常但 APM 全黑」）；修复为镜像 http 分支的校验哲学——Endpoint 含 "://" 或 "/" 直接报错，错误点名 host:port 期望形态并指向 URL 端点改设 Protocol:"http"，不回显端点原值（URL 可能内嵌凭据）
+
+关联问题单：oekit/tracing#98。
+
+- fix(init): parseOTLPHTTPEndpoint 显式拒绝 URL 的 query/fragment，不再静默丢弃（#99）——query token 型鉴权（?api_key= / ?token=）此前解析后凭空消失：Init 成功、导出请求到达后端却不带 token，后端 401/403、OTLP 重试耗尽数据全丢，而配置里的 token「明明配了」；修复为与内嵌凭据同一纪律——报错并指向 Config.Headers（query 里的密钥同样会进访问日志/代理日志），fragment 本就不会发给服务端、出现即配置错误，错误不回显端点内容
+
+关联问题单：oekit/tracing#99。
+
+- fix(init): 并发 Init 加进程级互斥，全局 TracerProvider 不再可能指向已 Shutdown 僵尸（#100）——「Set* 装全局→Swap/关前任」是两步非原子序列且全程无锁，两个 goroutine 并发 Init 时 Set 顺序与 Swap 顺序相反（A.Set → B.Set → B.Swap → A.Swap）会让 A 的 Swap 拿到 pB 并将其 Shutdown，而全局位最后由 B.Set 写为 pB：之后所有业务 span 不再记录（IsRecording=false）且零报错；修复为包级 mutex 把「创建→Set*→Swap/关前任」整个临界区圈住，补并发 Init 回归测试（N 协程并发 Init 后断言全局 tracer 新 span 仍 IsRecording）
+
+关联问题单：oekit/tracing#100。
+
+- fix(gormotel): 文档点明 Row()/Rows() 的 span 生命周期边界（#101）——Row()/Rows() 的 span 在游标建立后即结束，Scan/迭代期错误与耗时全部丢失、span 状态恒 Unset（Scan 的 sql.ErrNoRows 不进 span，错误被归因为「DB 没问题」）；根因是 gorm 回调模型拿不到取数期时机（gorm.io/gorm 的 Row()/Rows() 对 Statement.Dest 做 *sql.Row / *sql.Rows 具体类型断言，插件无法包装返回值延迟 span.End 或在 Scan/Close 处 RecordError），按 issue 认可的兜底处置：包文档点明「span 只覆盖查询发起期」并给出覆盖取数期的替代路径（Scan()/Find()/First() 全程覆盖），契约测试钉住文档不再失实
+
+关联问题单：oekit/tracing#101。
+
+- fix(traceid): 包文档对齐实现——不再宣称包内不存在的「生成/桥接」能力（#102）——traceid/doc.go 第 1 行「生成、透传与提取」与用法注释「（生成 + 桥接）」、tracing/doc.go「traceid: trace_id 生成/提取/桥接」三处宣称，而实现面只有 Key/HeaderKey/IDLength 常量与 ContextWith/FromContext 存取（外加 init() 注册 logx 提取器），下游按文档找能力找不到、且文档自相矛盾；处置以实现为准改文档（issue 首选项）：两处文档如实描述为键/提取原语，生成/桥接标注归属 oekit/middleware 的 hmw 标准栈（补最小实现会制造第二真相源），契约测试钉住「宣称生成/桥接必须同行标注归属」
+
+关联问题单：oekit/tracing#102。
+
 ## [v0.3.10] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）

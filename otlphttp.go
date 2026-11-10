@@ -45,6 +45,12 @@ type otlpHTTPEndpoint struct {
 //
 // 不接受 URL 内嵌凭据（http://user:pass@host）：凭据走 Config.Headers——
 // URL 里的凭据会进访问日志、代理日志与错误栈。
+//
+// 同样不接受 query 与 fragment（#99）：此前二者被静默丢弃，query token 型
+// 鉴权（?api_key= / ?token=）配置凭空消失——Init 成功、导出到后端却不带
+// token，401/403 重试耗尽数据全丢，而配置里的 token「明明配了」。与内嵌
+// 凭据同一纪律：显式报错并指向 Config.Headers（query 里的密钥同样会进
+// 访问日志/代理日志）；fragment 本来就不会发给服务端，出现即配置错误。
 func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, error) {
 	ep := otlpHTTPEndpoint{insecure: insecure}
 	raw := strings.TrimSpace(endpoint)
@@ -75,6 +81,13 @@ func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, er
 	}
 	if u.User != nil {
 		return ep, errors.New("tracing: OTLP/HTTP endpoint must not embed credentials; use Config.Headers instead")
+	}
+	if u.RawQuery != "" {
+		// 不回显原值：query 里可能就是 token 本体。
+		return ep, errors.New("tracing: OTLP/HTTP endpoint must not carry query parameters; use Config.Headers instead")
+	}
+	if u.Fragment != "" {
+		return ep, errors.New("tracing: OTLP/HTTP endpoint must not carry a fragment; it is never sent to the server, use Config.Headers for auth")
 	}
 	if u.Host == "" {
 		return ep, errors.New("tracing: OTLP/HTTP endpoint missing host")
