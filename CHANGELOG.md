@@ -1,3 +1,9 @@
+## [Unreleased]
+
+- fix(init): gRPC 分支校验 Endpoint 形态，URL 形态端点不再静默断供（#98）——cfg.Endpoint 此前原样交给 otlptracegrpc/otlpmetricgrpc：URL 形态（http://host:port、https://host:port、带路径）Init 成功返回 provider，但 grpc 拨号目标解析不出可用地址、一次都不连，span/metric 在后台导出重试里无声耗尽（「服务正常但 APM 全黑」）；修复为镜像 http 分支的校验哲学——Endpoint 含 "://" 或 "/" 直接报错，错误点名 host:port 期望形态并指向 URL 端点改设 Protocol:"http"，不回显端点原值（URL 可能内嵌凭据）
+
+关联问题单：oekit/tracing#98。
+
 ## [v0.3.10] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）

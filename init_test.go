@@ -432,3 +432,48 @@ func TestInit_ReInitOnOffOn_ClosesOrphanedMeterProvider(t *testing.T) {
 		t.Fatalf("第一个 on 的 MeterProvider 在 on→off→on 后未被关闭（#68 孤儿导出）: err=%v, want ErrReaderShutdown", err)
 	}
 }
+
+// TestInit_GRPCRejectsURLEndpoint 钉住 #98：gRPC 分支必须校验 Endpoint 形态。
+// URL 形态端点（照抄 OTEL_EXPORTER_OTLP_ENDPOINT 的 URL 格式、grpc/http 两协议
+// 共用一份 Endpoint 配置）此前被原样交给导出器：Init 成功返回 provider，但
+// grpc 拨号目标解析不出可用地址、一次都不连——span/metric 在后台导出重试里
+// 无声耗尽，表现是「服务正常但 APM 全黑」。与 http 分支同一纪律：不合规输入
+// 报错，不静默断供。
+func TestInit_GRPCRejectsURLEndpoint(t *testing.T) {
+	cases := []struct{ name, endpoint string }{
+		{"url with http scheme", "http://127.0.0.1:4317"},
+		{"url with https scheme", "https://otel-collector:4317"},
+		{"url with path", "http://127.0.0.1:4317/v1/traces"},
+		{"host port with path", "otel-collector:4317/v1/traces"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, err := Init(Config{ServiceName: "svc", Endpoint: tc.endpoint, SampleRate: 1})
+			if err == nil {
+				_ = p.Shutdown(context.Background())
+				t.Fatalf("Init() with gRPC endpoint %q error = nil, want error（URL 形态端点 Init 成功却一次都不拨号）", tc.endpoint)
+			}
+			if !strings.Contains(err.Error(), "host:port") {
+				t.Errorf("error should name the expected host:port form, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), ProtocolHTTP) {
+				t.Errorf("error should point URL-form endpoints at Protocol %q, got: %v", ProtocolHTTP, err)
+			}
+		})
+	}
+}
+
+// TestValidateGRPCEndpoint 单元钉住 gRPC 端点形态校验（#98）：合规 host:port
+// 放行；URL 形态（含 "://" 或 "/"）必须报错——URL 端点走 Protocol:"http"。
+func TestValidateGRPCEndpoint(t *testing.T) {
+	for _, ok := range []string{"localhost:4317", "otel-collector:4317", "127.0.0.1:4317", "[::1]:4317"} {
+		if err := validateGRPCEndpoint(ok); err != nil {
+			t.Errorf("validateGRPCEndpoint(%q) = %v, want nil", ok, err)
+		}
+	}
+	for _, bad := range []string{"http://127.0.0.1:4317", "https://otel-collector:4317", "otel-collector:4317/v1/traces", "otel-collector:4317/"} {
+		if err := validateGRPCEndpoint(bad); err == nil {
+			t.Errorf("validateGRPCEndpoint(%q) = nil, want error", bad)
+		}
+	}
+}

@@ -78,7 +78,8 @@ type Config struct {
 
 	// Endpoint OTLP 端点。
 	//
-	// grpc 协议：host:port 形态，如 "otel-collector:4317"。
+	// grpc 协议：host:port 形态，如 "otel-collector:4317"；URL 形态
+	//（含 "://" 或 "/"）直接报错（#98，URL 端点请设 Protocol:"http"）。
 	// http 协议：接受完整 signal URL（"https://host/api/otel/v1/traces"）、
 	// 基址（"https://host"、"https://host/api/otel"）或无 scheme 的
 	// host:port（"otel-collector:4318"）；详见 otlphttp.go 的推导规则。
@@ -241,6 +242,10 @@ func resolveProtocol(p string) (string, error) {
 // newGRPCExportingProviders 创建带 OTLP gRPC 导出器的 Tracer/Meter Provider。
 // tracing 与 metrics 共用 Config.Endpoint 与 Insecure 配置。
 func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resource.Resource) (*sdktrace.TracerProvider, *metric.MeterProvider, error) {
+	if err := validateGRPCEndpoint(cfg.Endpoint); err != nil {
+		return nil, nil, err
+	}
+
 	// ---- tracing exporter ----
 	var traceOpts []otlptracegrpc.Option
 	traceOpts = append(traceOpts, otlptracegrpc.WithEndpoint(cfg.Endpoint))
@@ -306,6 +311,22 @@ func buildSampler(rate float64) sdktrace.Sampler {
 		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(rate))
 	}
 	return sdktrace.AlwaysSample()
+}
+
+// validateGRPCEndpoint 校验 gRPC 分支的 Endpoint 形态（#98）。
+//
+// gRPC 导出器把 Endpoint 当拨号目标（host:port）解析，URL 形态解析不出可用
+// 地址：Init 成功返回 provider 但一次都不拨号，span/metric 在后台导出重试里
+// 无声耗尽（「服务正常但 APM 全黑」）。与 http 分支的端点校验、resolveProtocol
+// 对未知协议的处置同一纪律：不合规输入报错，不静默断供；URL 形态端点请改设
+// Protocol:"http"（OTLP/HTTP 分支原生接受 URL）。错误不回显端点原值——URL
+// 形态端点可能内嵌凭据/令牌，不进日志与错误信息。
+func validateGRPCEndpoint(endpoint string) error {
+	if strings.Contains(endpoint, "://") || strings.Contains(endpoint, "/") {
+		return errors.New("tracing: gRPC Config.Endpoint must be \"host:port\" (e.g. \"otel-collector:4317\"); " +
+			"URL-form endpoint must set Protocol: \"http\"")
+	}
+	return nil
 }
 
 // validateSampleRate 校验采样率配置（#59）。
