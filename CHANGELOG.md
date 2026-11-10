@@ -16,6 +16,10 @@
 
 关联问题单：oekit/tracing#101。
 
+- fix(traceid): 包文档对齐实现——不再宣称包内不存在的「生成/桥接」能力（#102）——traceid/doc.go 第 1 行「生成、透传与提取」与用法注释「（生成 + 桥接）」、tracing/doc.go「traceid: trace_id 生成/提取/桥接」三处宣称，而实现面只有 Key/HeaderKey/IDLength 常量与 ContextWith/FromContext 存取（外加 init() 注册 logx 提取器），下游按文档找能力找不到、且文档自相矛盾；处置以实现为准改文档（issue 首选项）：两处文档如实描述为键/提取原语，生成/桥接标注归属 oekit/middleware 的 hmw 标准栈（补最小实现会制造第二真相源），契约测试钉住「宣称生成/桥接必须同行标注归属」
+
+关联问题单：oekit/tracing#102。
+
 ## [v0.3.10] — 2026-11-10
 
 - - build: 依赖地板对齐（floor sync，无代码变更）

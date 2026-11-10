@@ -1,7 +1,8 @@
-// Package traceid 负责 HTTP 请求链路追踪 ID（trace_id）的生成、透传与提取。
+// Package traceid 提供 HTTP 请求链路追踪 ID（trace_id）的存储键与
+// context 提取/注入原语。
 //
 // trace_id 贯穿整个请求链路（日志、响应体、下游 RPC/MQ），是 ekit 可观测性的基石。
-// 本包是 trace_id 的唯一真相源（single source of truth）：
+// 本包是 trace_id 键名/头名/长度的唯一真相源（single source of truth）：
 //
 //   - Key: 标准库 context 与 RequestContext 中存储 trace_id 的键名
 //   - HeaderKey: HTTP 头名称（X-Trace-Id），用于跨服务透传
@@ -12,8 +13,8 @@
 //
 // 用法:
 //
-//	// 注册中间件链（生成 + 桥接）
-//	// 中间件正身在 oekit/middleware 的 hmw 标准栈（本包只提供 key/提取原语）
+//	// 注册中间件链（生成 + 桥接的正身在 oekit/middleware 的 hmw 标准栈；
+//	// 本包只提供 key/提取原语，没有那两项实现——#102）
 //
 //	// 在 service 层提取（用于日志关联）
 //	traceID := traceid.FromContext(ctx)

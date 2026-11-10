@@ -62,7 +62,7 @@
 //   - httpotel: 标准库 net/http 客户端追踪（otelhttp Transport 封装）
 //   - redisotel: go-redis 追踪（redisotel.InstrumentTracing(client.Client())）
 //   - gormotel: GORM 追踪插件（db.Use(gormotel.NewPlugin())）
-//   - traceid: trace_id 生成/提取/桥接
+//   - traceid: trace_id 键/提取原语（生成/桥接在 oekit/middleware 的 hmw 栈）
 //
 // Hertz/Kitex 框架侧 instrumentation 分属 github.com/oekit/hertz（hertzotel/
 // hertztracer）与 github.com/oekit/kitex（kitexotel）。
