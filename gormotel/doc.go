@@ -14,20 +14,23 @@
 // # Row()/Rows() 的 span 生命周期边界（#101）
 //
 // db.Raw(...).Row() / .Rows() 产出的 span 只覆盖查询发起期（SQL 构建与
-// 游标建立）；Scan/迭代期的错误与耗时不在 span 内，span 状态恒 Unset：
+// 游标建立——查询本身在游标建立时就已真实执行）；Scan/迭代期的错误与
+// 耗时不在 span 内：
 //
-//   - Row()：database/sql 的 QueryRowContext 是惰性执行，真正的查询发生
-//     在之后的 Scan；Scan 阶段错误（sql.ErrNoRows、类型不匹配等）无法
-//     记入 span；
-//   - Rows()：span 覆盖到游标建立（查询执行 + 首批取数），之后的迭代与
-//     Close 的耗时/错误同样不在 span 内。
+//   - Row()：查询期错误（语法错/连接断）经 ConnPool 包装层用 Row.Err()
+//     （只读不消费）记进 span，与 Query/Exec 路径口径一致；Scan 阶段的
+//     错误（sql.ErrNoRows、类型不匹配等）发生在回调链之外，无法记入
+//     span，span 状态对 Scan 失败保持 Unset；
+//   - Rows()：查询期错误由 gorm 写进 db.Error、after 钩子照常记录；span
+//     覆盖到游标建立，之后的迭代与 Close 的耗时/错误不在 span 内。
 //
-// 根因是 gorm 回调模型拿不到取数期时机：gorm.io/gorm 的 Row()/Rows() 对
-// Statement.Dest 做 *sql.Row / *sql.Rows 具体类型断言，插件无法包装返回值
-// 去延迟 span.End 或在 Scan/Close 处 RecordError（完整覆盖需要 gorm 上游
-// 提供 Scan/Close 时机回调）。需要全生命周期覆盖请走 Scan()/Find()/First()
-// （Query 回调全程覆盖，错误照常 RecordError/SetStatus），或在业务侧对
-// 取数期错误自行记录——避免把 Scan 失败错误归因为「DB 没问题」。
+// Scan/迭代期不可观察的根因是 gorm 回调模型拿不到取数期时机：
+// gorm.io/gorm 的 Row()/Rows() 对 Statement.Dest 做 *sql.Row / *sql.Rows
+// 具体类型断言，插件无法包装返回值去延迟 span.End 或在 Scan/Close 处
+// RecordError（完整覆盖需要 gorm 上游提供 Scan/Close 时机回调）。需要
+// 全生命周期覆盖请走 Scan()/Find()/First()（Query 回调全程覆盖，错误照常
+// RecordError/SetStatus），或在业务侧对取数期错误自行记录——避免把 Scan
+// 失败错误归因为「DB 没问题」。
 //
 // 迁移说明：原 gormx.NewOtelPlugin / gormx.OtelOption（ekit-gorm v0.1.x）已迁入本包，
 // 更名 NewPlugin / Option；server.address 由 MySQL Dialector 自动探测

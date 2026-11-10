@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/tracing@v0.3.10
+go get github.com/oekit/tracing@v0.4.0
 ```
 
 ## 这个仓库做什么
@@ -22,10 +22,10 @@ go get github.com/oekit/tracing@v0.3.10
 | 包 | 做什么 |
 |---|---|
 | 根包 | `tracing.Init(Config)`：OTLP 导出器 + provider（Endpoint 为空 = 仅本地 provider，零网络） |
-| `traceid` | trace_id 生成/提取/桥接：`ContextWith`、`FromContext`、`Key`/`HeaderKey`/`IDLength`。HTTP 中间件正身在 [oekit/middleware](https://github.com/oekit/middleware) 的 TraceID 中间件（`hmw.Middleware` 标准栈首件，常量取本包）——ekit 拆分时中间件留在 middleware/hmw 仓，#51。logx 的 `Ctx*` 方法自动读取 |
+| `traceid` | trace_id 生成/提取/桥接：`NewID`（生成，本包是唯一生成点）、`ContextWith`/`FromContext`（注入/提取）、`FromSpanContext`（OTel SpanContext → trace_id 桥接，日志 ↔ APM 双 ID 关联，#102）、`Key`/`HeaderKey`/`IDLength`。HTTP 中间件正身在 [oekit/middleware](https://github.com/oekit/middleware) 的 TraceID 中间件（`hmw.Middleware` 标准栈首件，常量取本包）——ekit 拆分时中间件留在 middleware/hmw 仓，#51。logx 的 `Ctx*` 方法自动读取 |
 | `httpotel` | net/http 插桩（`Transport()` / `WrapTransport`） |
 | `redisotel` | go-redis 插桩（`InstrumentTracing`） |
-| `gormotel` | GORM 插桩插件（`NewPlugin`，`db.Use` 显式挂载） |
+| `gormotel` | GORM 插桩插件（`NewPlugin`，`db.Use` 显式挂载）；Row()/Rows() 的 span 只覆盖到游标建立、查询期错误照记（#101，边界详见包文档） |
 
 ## 快速使用
 

@@ -135,9 +135,12 @@ func (p otelPlugin) Initialize(db *gorm.DB) (err error) {
 		{cb.Update().Before("gorm:update"), p.before("gorm.Update"), "before:update"},
 		{cb.Update().After("gorm:update"), p.after(), "after:update"},
 
-		// Row()/Rows() 的 span 只覆盖查询发起期（Scan/Close 时机在 gorm 回调
-		// 模型内不可观察，见包文档「span 生命周期边界」一节，#101）。
-		{cb.Row().Before("gorm:row"), p.before("gorm.Row"), "before:row"},
+		// row 回调派发面 = db.Raw(...).Row() 与 .Rows()（gorm v1.31 的 DB.Rows
+		// 内部 Set("rows", true) 后仍走 callbacks.Row()）；before 钩子用
+		// beforeRow——在 span 之上再包一层 ConnPool，把 Row 路径落在
+		// *sql.Row 里的查询期错误捞进 span（#101）。Scan/迭代/Close 时机
+		// 仍在 gorm 回调模型内不可观察（见包文档「span 生命周期边界」，#101）。
+		{cb.Row().Before("gorm:row"), p.beforeRow("gorm.Row"), "before:row"},
 		{cb.Row().After("gorm:row"), p.after(), "after:row"},
 
 		{cb.Raw().Before("gorm:raw"), p.before("gorm.Raw"), "before:raw"},
@@ -160,14 +163,50 @@ type contextWrapper struct {
 
 func (p *otelPlugin) before(spanName string) gormHookFunc {
 	return func(tx *gorm.DB) {
-		parentCtx := tx.Statement.Context
-		ctx, span := p.tracer.Start(tx.Statement.Context, spanName, trace.WithSpanKind(trace.SpanKindClient))
-		tx.Statement.Context = contextWrapper{ctx, parentCtx}
-
-		if p.serverAddress != "" {
-			span.SetAttributes(semconv.ServerAddressKey.String(p.serverAddress))
-		}
+		p.startSpan(tx, spanName)
 	}
+}
+
+// startSpan 开启当前回调链的 span 并把 span ctx 挂到 tx.Statement.Context
+// （contextWrapper 保留 parent 供 after 钩子还原），返回 span 本身——
+// beforeRow 需要持有它把查询期错误记进 span（#101）。
+func (p *otelPlugin) startSpan(tx *gorm.DB, spanName string) trace.Span {
+	parentCtx := tx.Statement.Context
+	ctx, span := p.tracer.Start(parentCtx, spanName, trace.WithSpanKind(trace.SpanKindClient))
+	tx.Statement.Context = contextWrapper{ctx, parentCtx}
+
+	if p.serverAddress != "" {
+		span.SetAttributes(semconv.ServerAddressKey.String(p.serverAddress))
+	}
+	return span
+}
+
+// beforeRow 与 before 同构，但额外包一层 Statement.ConnPool（#101）：
+// gorm 的 RowQuery 走 ConnPool.QueryRowContext——查询在游标建立时已真实
+// 执行，查询期错误（语法错/连接断）落在返回的 *sql.Row 里，gorm 自身的
+// db.Error 看不见 ⇒ after 钩子拿不到；包装层用 Row.Err()（database/sql
+// 为包装方提供的只读访问器，不消费游标）把该错误记进 span。包装只在本条
+// 语句的回调窗口内存活，after 钩子还原。
+func (p *otelPlugin) beforeRow(spanName string) gormHookFunc {
+	return func(tx *gorm.DB) {
+		span := p.startSpan(tx, spanName)
+		tx.Statement.ConnPool = rowConnPool{ConnPool: tx.Statement.ConnPool, span: span}
+	}
+}
+
+// rowConnPool 是 row 回调窗口内的 ConnPool 包装（#101）：QueryRowContext 的
+// 查询期错误经 Row.Err() 只读捞取并记进 span；其余方法经嵌入接口原样透传
+// （Rows() 路径的 QueryContext 错误由 gorm 写进 db.Error，after 钩子既有
+// 口径已覆盖，此处不重复记录）。
+type rowConnPool struct {
+	gorm.ConnPool
+	span trace.Span
+}
+
+func (w rowConnPool) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	row := w.ConnPool.QueryRowContext(ctx, query, args...)
+	recordSpanError(w.span, row.Err())
+	return row
 }
 
 func (p *otelPlugin) after() gormHookFunc {
@@ -175,6 +214,11 @@ func (p *otelPlugin) after() gormHookFunc {
 		defer func() {
 			if c, ok := tx.Statement.Context.(contextWrapper); ok {
 				tx.Statement.Context = c.parent
+			}
+			// 还原 beforeRow 换上的 ConnPool 包装（#101）：包装只服务本条
+			// 语句的回调窗口，不留在 Statement 上影响后续链式调用
+			if rp, ok := tx.Statement.ConnPool.(rowConnPool); ok {
+				tx.Statement.ConnPool = rp.ConnPool
 			}
 		}()
 
@@ -215,17 +259,25 @@ func (p *otelPlugin) after() gormHookFunc {
 		}
 
 		span.SetAttributes(attrs...)
-		switch tx.Error {
-		case nil,
-			gorm.ErrRecordNotFound,
-			driver.ErrSkip,
-			io.EOF,
-			sql.ErrNoRows:
-		default:
-			span.RecordError(tx.Error)
-			span.SetStatus(codes.Error, tx.Error.Error())
-		}
+		recordSpanError(span, tx.Error)
 	}
+}
+
+// recordSpanError 把错误记进 span（#101 统一口径）：业务语义性错误（未命中/
+// 驱动跳过/流结束）不算失败，保持 Unset——与 Query/Exec 路径既有口径一致；
+// Row 路径的查询期错误（rowConnPool 捞取）与回调链尾的 tx.Error 共用此判定，
+// 避免两处口径漂移。
+func recordSpanError(span trace.Span, err error) {
+	switch err {
+	case nil,
+		gorm.ErrRecordNotFound,
+		driver.ErrSkip,
+		io.EOF,
+		sql.ErrNoRows:
+		return
+	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 // dbSystem 把 GORM 方言名映射为 OTel 约定的 db.system 值（#78）。
