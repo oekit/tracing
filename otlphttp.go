@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"strings"
 
-	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -41,7 +40,11 @@ type otlpHTTPEndpoint struct {
 //  2. 基址 —— "https://host" / "https://host/api/public/otel"：
 //     后接标准 signal 路径 /v1/traces 与 /v1/metrics；
 //  3. 无 scheme 的 host:port —— "otel-collector:4318"：
-//     scheme 由 Config.Insecure 决定。
+//     scheme 由 Config.Insecure 决定。该形态不接受路径段：漏写 scheme 但
+//     带基址路径（"collector:4318/api/otel"）直接报错并提示补 scheme（#112）
+//     ——此前路径段被整串吞进 host:port、basePath 恒空，导出打到根路径，
+//     /api/otel 段无声丢失（Init 成功、导出 404 循环），与 validateGRPCEndpoint
+//     「不合规输入报错，不静默断供」的同一纪律相悖。
 //
 // 不接受 URL 内嵌凭据（http://user:pass@host）：凭据走 Config.Headers——
 // URL 里的凭据会进访问日志、代理日志与错误栈。
@@ -58,6 +61,12 @@ func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, er
 		return ep, errors.New("tracing: empty OTLP/HTTP endpoint")
 	}
 	if !strings.Contains(raw, "://") {
+		if strings.Contains(raw, "/") {
+			// 漏写 scheme 且带路径：整串当 host:port 收下的话 basePath 恒空、
+			// 路径段无声丢失 ⇒ 显式报错让调用方补 scheme（#112）。错误不回显
+			// 端点原值——无 scheme 形态也可能内嵌凭据/令牌。
+			return ep, errors.New("tracing: scheme-less OTLP/HTTP endpoint must be plain \"host:port\" (e.g. \"otel-collector:4318\"); a base path requires an explicit scheme (e.g. \"https://host:4318/api/otel\")")
+		}
 		// 无 scheme：host:port 形态，scheme 由 Insecure 决定。
 		ep.hostPort = raw
 		return ep, nil
@@ -175,15 +184,9 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 		return nil, nil, fmt.Errorf("tracing: create otlp http metric exporter: %w", err)
 	}
 
-	reader := metric.WithReader(metric.NewPeriodicReader(metricExp, metric.WithInterval(metricExportInterval)))
-	mp := metric.NewMeterProvider(reader, metric.WithResource(res))
-
-	// 与 grpc 分支同一纪律：必须显式指定 provider（无参 runtime.Start() 在
-	// 调用时刻捕获的全局还是 noop，runtime 指标会静默丢失）。
-	if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
-		_ = mp.Shutdown(context.Background())
-		_ = tp.Shutdown(context.Background())
-		return nil, nil, fmt.Errorf("tracing: start runtime metrics collector: %w", err)
+	mp, err := assembleMeterProvider(metricExp, res, tp) // 装配尾段与 grpc 分支共用（#110）
+	if err != nil {
+		return nil, nil, err
 	}
 	return tp, mp, nil
 }
