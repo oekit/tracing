@@ -261,14 +261,8 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	}
 
 	// ---- tracing exporter ----
-	var traceOpts []otlptracegrpc.Option
-	traceOpts = append(traceOpts, otlptracegrpc.WithEndpoint(cfg.Endpoint))
-	if cfg.Insecure {
-		traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
-	}
-	if len(cfg.Headers) > 0 {
-		traceOpts = append(traceOpts, otlptracegrpc.WithHeaders(cfg.Headers))
-	}
+	traceOpts := applyCommonGrpcOpts(cfg.Endpoint, cfg,
+		otlptracegrpc.WithEndpoint, otlptracegrpc.WithInsecure, otlptracegrpc.WithHeaders)
 	traceExp, err := otlptrace.New(context.Background(), otlptracegrpc.NewClient(traceOpts...))
 	if err != nil {
 		return nil, nil, fmt.Errorf("tracing: create otlp trace exporter: %w", err)
@@ -286,33 +280,61 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	if cfg.DisableMetrics {
 		return tp, nil, nil
 	}
-	var metricOpts []otlpmetricgrpc.Option
-	metricOpts = append(metricOpts, otlpmetricgrpc.WithEndpoint(cfg.Endpoint))
-	if cfg.Insecure {
-		metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
-	}
-	if len(cfg.Headers) > 0 {
-		metricOpts = append(metricOpts, otlpmetricgrpc.WithHeaders(cfg.Headers))
-	}
+	metricOpts := applyCommonGrpcOpts(cfg.Endpoint, cfg,
+		otlpmetricgrpc.WithEndpoint, otlpmetricgrpc.WithInsecure, otlpmetricgrpc.WithHeaders)
 	metricExp, err := otlpmetricgrpc.New(context.Background(), metricOpts...)
 	if err != nil {
 		_ = tp.Shutdown(context.Background()) // 回滚已创建的 trace provider
 		return nil, nil, fmt.Errorf("tracing: create otlp metric exporter: %w", err)
 	}
 
+	mp, err := assembleMeterProvider(metricExp, res, tp)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tp, mp, nil
+}
+
+// assembleMeterProvider 是 gRPC 与 HTTP 两条导出分支共用的 MeterProvider
+// 装配尾段（#110，两处逐字复制收敛于此）：周期读取器包住 metrics 导出器 →
+// 建 provider → 启动 Go runtime 指标采集；启动失败时回滚本次与入参 tp 的
+// trace 面，不返回半装配实例。「必须显式指定 provider」的关键注释随实现
+// 单点维护：
+//
+//	runtime.Start 必须显式指定 provider——无参 runtime.Start() 在调用时刻
+//	捕获 otel.GetMeterProvider()，此刻全局还是 noop（SetMeterProvider 在
+//	Init 返回后才执行），runtime 指标全部静默丢失；重复 Init 时则挂到
+//	上一轮已被 Shutdown 的 provider 上同样丢失
+func assembleMeterProvider(metricExp metric.Exporter, res *resource.Resource, tp *sdktrace.TracerProvider) (*metric.MeterProvider, error) {
 	reader := metric.WithReader(metric.NewPeriodicReader(metricExp, metric.WithInterval(metricExportInterval)))
 	mp := metric.NewMeterProvider(reader, metric.WithResource(res))
-
-	// 必须显式指定 provider：无参 runtime.Start() 在调用时刻捕获
-	// otel.GetMeterProvider()——此刻全局还是 noop（SetMeterProvider 在
-	// Init 返回后才执行），runtime 指标全部静默丢失；重复 Init 时则挂到
-	// 上一轮已被 Shutdown 的 provider 上同样丢失
 	if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
 		_ = mp.Shutdown(context.Background())
 		_ = tp.Shutdown(context.Background())
-		return nil, nil, fmt.Errorf("tracing: start runtime metrics collector: %w", err)
+		return nil, fmt.Errorf("tracing: start runtime metrics collector: %w", err)
 	}
-	return tp, mp, nil
+	return mp, nil
+}
+
+// applyCommonGrpcOpts 收集 gRPC 分支 trace/metric 两组导出器逐字复制的连接
+// 选项（Endpoint/Insecure/Headers，#110）：Option 构造器由调用方传入，两组
+// 选项的差异只剩「构造器属于哪条 signal」。
+func applyCommonGrpcOpts[OPT any](
+	endpoint string,
+	cfg Config,
+	withEndpoint func(string) OPT,
+	withInsecure func() OPT,
+	withHeaders func(map[string]string) OPT,
+) []OPT {
+	var opts []OPT
+	opts = append(opts, withEndpoint(endpoint))
+	if cfg.Insecure {
+		opts = append(opts, withInsecure())
+	}
+	if len(cfg.Headers) > 0 {
+		opts = append(opts, withHeaders(cfg.Headers))
+	}
+	return opts
 }
 
 // buildSampler 将 SampleRate 转换为采样器。

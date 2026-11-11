@@ -2,6 +2,11 @@ package gormotel
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -156,7 +161,6 @@ func TestOtelPlugin_StackTrace_NotPanic(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = db.Exec("SELECT 1").Error
-	_ = gorm.ErrRecordNotFound // 防止 unused import
 }
 
 // TestDoc_RowRowsSpanBoundaryDocumented 钉住 #101 的兜底契约：gorm 回调
@@ -330,6 +334,103 @@ func TestOtelPlugin_RowsSpanEndsAtCursorEstablishment(t *testing.T) {
 	// 迭代期间插件不再产出任何 span（边界内没有第二个 span 的位置）
 	if got := len(exp.GetSpans()); got != len(spans) {
 		t.Errorf("span count changed during iteration: %d -> %d", len(spans), got)
+	}
+}
+
+// TestRecordSpanError_WrappedSentinelsStayUnset 钉住 #111 的回归：recordSpanError
+// 必须用 errors.Is 判定哨兵——switch == 是相等比较，经 fmt.Errorf("%w") 包装后
+// 的 gorm.ErrRecordNotFound（业务「未命中」是最高频的被包装哨兵）此前不匹配，
+// span 被 RecordError + SetStatus(Error)，APM 上未命中查询全量报红，与
+// 「业务语义性错误不算失败」的口径相反。包装层级任意深都要命中（errors.Is
+// 逐层拆 %w），其他三个哨兵（driver.ErrSkip / io.EOF / sql.ErrNoRows）同理。
+func TestRecordSpanError_WrappedSentinelsStayUnset(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"nil", nil},
+		{"plain ErrRecordNotFound", gorm.ErrRecordNotFound},
+		{"wrapped ErrRecordNotFound", fmt.Errorf("get user by id: %w", gorm.ErrRecordNotFound)},
+		{"double wrapped ErrRecordNotFound", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", gorm.ErrRecordNotFound))},
+		{"wrapped sql.ErrNoRows", fmt.Errorf("scan: %w", sql.ErrNoRows)},
+		{"plain driver.ErrSkip", driver.ErrSkip},
+		{"wrapped driver.ErrSkip", fmt.Errorf("exec: %w", driver.ErrSkip)},
+		{"plain io.EOF", io.EOF},
+		{"wrapped io.EOF", fmt.Errorf("stream: %w", io.EOF)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exp := tracetest.NewInMemoryExporter()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+			_, span := tp.Tracer("test").Start(context.Background(), "db.span")
+			recordSpanError(span, tc.err)
+			span.End()
+
+			spans := exp.GetSpans()
+			if len(spans) != 1 {
+				t.Fatalf("span count = %d, want 1", len(spans))
+			}
+			if got := spans[0].Status.Code; got != codes.Unset {
+				t.Errorf("span status = %v, want Unset（业务语义性错误不算失败，#111）", got)
+			}
+			if n := len(spans[0].Events); n != 0 {
+				t.Errorf("span error events = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// TestRecordSpanError_RealErrorStillMarked 正向对照：非哨兵的真错误仍要
+// RecordError + SetStatus(Error)——收敛判定口径时不得把报错面一起抹掉。
+func TestRecordSpanError_RealErrorStillMarked(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	boom := errors.New("connection refused")
+	_, span := tp.Tracer("test").Start(context.Background(), "db.span")
+	recordSpanError(span, fmt.Errorf("dial db: %w", boom)) // 非哨兵错误照常包装
+	span.End()
+
+	spans := exp.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("span count = %d, want 1", len(spans))
+	}
+	if got := spans[0].Status.Code; got != codes.Error {
+		t.Errorf("span status = %v, want Error（真错误必须进 span）", got)
+	}
+	if len(spans[0].Events) == 0 {
+		t.Error("span must record the error event, got 0 events")
+	}
+}
+
+// TestOtelPlugin_FirstMissSpanUnset 走真实 gorm 链路的契约钉：First 未命中
+// 时 tx.Error = gorm.ErrRecordNotFound，after 钩子的 span 必须保持 Unset——
+// 「业务语义性错误不算失败」对 Query/Exec 路径同样成立（#111 口径回归钉）。
+func TestOtelPlugin_FirstMissSpanUnset(t *testing.T) {
+	db, exp := newTestDBWithExporter(t)
+	if err := db.Exec("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	type item struct {
+		ID   int64
+		Name string
+	}
+	var got item
+	err := db.Where("id = ?", 42).First(&got).Error
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("First on empty table err = %v, want gorm.ErrRecordNotFound", err)
+	}
+
+	span := findSpan(t, exp.GetSpans(), "select items")
+	if code := span.Status.Code; code != codes.Unset {
+		t.Errorf("span status = %v, want Unset（未命中查询不得报红，#111）", code)
+	}
+	if len(span.Events) != 0 {
+		t.Errorf("span error events = %d, want 0", len(span.Events))
 	}
 }
 

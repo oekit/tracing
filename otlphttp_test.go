@@ -93,6 +93,28 @@ func TestParseOTLPHTTPEndpoint_RejectsQueryAndFragment(t *testing.T) {
 	}
 }
 
+// TestParseOTLPHTTPEndpoint_SchemelessPathRejected 钉住 #112：无 scheme 分支
+// 不再静默吞路径段。"collector:4318/api/otel"（漏写 scheme 但带基址路径）此前
+// 被整串当 host:port 收下、basePath 恒空，最终导出打 https://collector:4318/
+// v1/traces 而 /api/otel 段无声丢失——Init 成功、导出 404 循环，与
+// validateGRPCEndpoint「不合规输入报错，不静默断供」的既定纪律相悖。报错须
+// 提示补 scheme，且不回显端点原值（无 scheme 形态也可能内嵌凭据）。
+func TestParseOTLPHTTPEndpoint_SchemelessPathRejected(t *testing.T) {
+	for _, endpoint := range []string{
+		"collector:4318/api/otel", // 基址路径（issue #112 原始样例形态）
+		"collector/api",           // 无端口带路径
+		"collector:4318/",         // 尾斜杠同罪（路径段以 / 计）
+	} {
+		_, err := parseOTLPHTTPEndpoint(endpoint, false)
+		if err == nil {
+			t.Fatalf("parseOTLPHTTPEndpoint(%q) error = nil, want error（路径段被静默吞进 host:port ⇒ 导出 404 无线索）", endpoint)
+		}
+		if !strings.Contains(err.Error(), "scheme") {
+			t.Errorf("error should point at explicit scheme, got: %v", err)
+		}
+	}
+}
+
 // TestOTLPHTTPEndpoint_SignalPaths signal 路径推导：端点指到哪个 signal，
 // 另一个按同前缀换名；否则基址后拼标准路径。
 func TestOTLPHTTPEndpoint_SignalPaths(t *testing.T) {
