@@ -4,7 +4,9 @@
 // trace_id 贯穿整个请求链路（日志、响应体、下游 RPC/MQ），是 ekit 可观测性的基石。
 // 本包是 trace_id 的唯一真相源（single source of truth）：
 //
-//   - Key: 标准库 context 与 RequestContext 中存储 trace_id 的键名
+//   - Key: Hertz RequestContext 中存储 trace_id 的键名（仅此用途；标准
+//     context 的注入/提取走 ContextWith/FromContext 的类型化键，不经
+//     Key——拿 Key 当 context.WithValue 的键会静默断链，#115）
 //   - HeaderKey: HTTP 头名称（X-Trace-Id），用于跨服务透传
 //   - IDLength: trace_id 的标准长度
 //   - NewID: 生成一条符合本包规范的 trace_id（IDLength 位十六进制，#102）——

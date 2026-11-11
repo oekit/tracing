@@ -11,7 +11,13 @@ import (
 )
 
 const (
-	// Key 是 trace_id 在 Hertz RequestContext 与标准 context 中存储使用的键名。
+	// Key 是 trace_id 在 Hertz **RequestContext**（hertz）中的存储键名——
+	// 字符串键，仅供 RequestContext.Set/Get 使用（hmw 标准栈的注入点）。
+	//
+	// ⚠️ 不要拿它当 context.WithValue 的键（#115）：标准 context.Context 的
+	// 注入/提取必须走 ContextWith/FromContext——那边用的是未导出的类型化键
+	// ctxKey，按 Key 写字面键存取可编译、但 FromContext 永远取不回，
+	// trace_id 全链路静默断链且零报错。
 	Key = "trace_id"
 
 	// HeaderKey 是 trace_id 透传使用的请求/响应头名称。
