@@ -1,3 +1,12 @@
+## [v0.4.1] — 2026-11-12
+
+- fix(init): parseOTLPHTTPEndpoint 无 scheme 分支显式拒绝带路径段，不再静默断供（#112）——"collector:4318/api/otel"（漏写 scheme 但带基址路径）此前被整串当 host:port 收下、basePath 恒空，最终导出打 https://collector:4318/v1/traces 而 /api/otel 段无声丢失：Init 成功、导出 404 循环，与 validateGRPCEndpoint「不合规输入报错，不静默断供」的既定纪律相悖；修复为无 scheme 且含 "/"（含尾斜杠）直接报错并提示补 scheme（"https://host:4318/api/otel"），错误不回显端点原值（无 scheme 形态也可能内嵌凭据，与内嵌凭据拒绝同一口径），补 parse 回归测试（基址路径/无端口带路径/尾斜杠三形态）
+- fix(gormotel): recordSpanError 哨兵判定改 errors.Is，包装后的 ErrRecordNotFound 不再被误标 span 失败（#111）——switch == 是相等比较，经 fmt.Errorf("%w") 包装的 gorm.ErrRecordNotFound（业务「未命中」是最高频的被包装哨兵）此前不匹配，span 被 RecordError + SetStatus(codes.Error)，APM 上未命中查询全量报红，与「业务语义性错误不算失败」的口径相反；修复为 errors.Is 链逐层拆 %w（gorm.ErrRecordNotFound/driver.ErrSkip/io.EOF/sql.ErrNoRows 四哨兵，包装层级任意深命中），补 wrapped 哨兵回归测试（多级包装 × 4 哨兵）+ 真错误正向对照 + First 未命中全链路契约钉
+- refactor(init): gRPC 与 HTTP 两条导出分支的 MeterProvider 装配尾段收敛到 assembleMeterProvider（#110）——reader+mp+runtime.Start+失败回滚 12 行在 init.go/otlphttp.go 两处逐字复制（连 DisableMetrics 早退回滚与「runtime.Start 必须显式指定 provider」关键注释都是双份维护），抽为单点后两分支各剩一行调用；另抽 applyCommonGrpcOpts 泛型帮助函数收编 grpc 分支 trace/metric 两组逐字复制的连接选项构建（Go 1.26 泛型，Option 构造器由调用方注入），行为无变化
+- build: 依赖地板抬到 logx v0.10.0（地板跑步机：旧地板会焊进已发布产物且 tag 不可重推）
+
+关联问题单：tracing#110、tracing#111、tracing#112。
+
 ## [v0.4.0] — 2026-11-11
 
 - fix(init): gRPC 分支校验 Endpoint 形态，URL 形态端点不再静默断供（#98）——cfg.Endpoint 此前原样交给 otlptracegrpc/otlpmetricgrpc：URL 形态（http://host:port、https://host:port、带路径）Init 成功返回 provider，但 grpc 拨号目标解析不出可用地址、一次都不连，span/metric 在后台导出重试里无声耗尽（「服务正常但 APM 全黑」）；修复为镜像 http 分支的校验哲学——Endpoint 含 "://" 或 "/" 直接报错，错误点名 host:port 期望形态并指向 URL 端点改设 Protocol:"http"，不回显端点原值（URL 可能内嵌凭据）
