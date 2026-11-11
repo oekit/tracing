@@ -33,6 +33,7 @@ func TestParseOTLPHTTPEndpoint(t *testing.T) {
 		{name: "trailing slash trimmed", endpoint: "https://host/api/otel/", wantHost: "host", wantBase: "/api/otel", wantSecure: true},
 		{name: "host port without scheme", endpoint: "otel-collector:4318", wantHost: "otel-collector:4318", wantBase: "", wantSecure: true},
 		{name: "host port without scheme insecure", endpoint: "otel-collector:4318", insecure: true, wantHost: "otel-collector:4318", wantBase: "", wantSecure: false},
+		{name: "path without scheme rejected (#112)", endpoint: "collector:4318/api/otel", wantErr: true},
 		{name: "empty", endpoint: "", wantErr: true},
 		{name: "unsupported scheme", endpoint: "ftp://host/x", wantErr: true},
 		{name: "missing host", endpoint: "https:///path", wantErr: true},

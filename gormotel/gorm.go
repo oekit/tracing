@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -267,13 +268,17 @@ func (p *otelPlugin) after() gormHookFunc {
 // 驱动跳过/流结束）不算失败，保持 Unset——与 Query/Exec 路径既有口径一致；
 // Row 路径的查询期错误（rowConnPool 捞取）与回调链尾的 tx.Error 共用此判定，
 // 避免两处口径漂移。
+//
+// 哨兵判定用 errors.Is（#111）：业务「未命中」是最高频的被包装哨兵——调用方
+// 常以 fmt.Errorf("%w")/errors.Join 包一层再上抛，此前的 switch == 相等比较
+// 对包装后的错误全部落空，未命中查询被 RecordError + SetStatus(Error)，
+// APM 上未命中查询全量报红，与本注释声明的「业务语义性错误不算失败」相反。
 func recordSpanError(span trace.Span, err error) {
-	switch err {
-	case nil,
-		gorm.ErrRecordNotFound,
-		driver.ErrSkip,
-		io.EOF,
-		sql.ErrNoRows:
+	if err == nil ||
+		errors.Is(err, gorm.ErrRecordNotFound) ||
+		errors.Is(err, driver.ErrSkip) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, sql.ErrNoRows) {
 		return
 	}
 	span.RecordError(err)

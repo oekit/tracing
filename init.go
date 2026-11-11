@@ -300,19 +300,31 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 		return nil, nil, fmt.Errorf("tracing: create otlp metric exporter: %w", err)
 	}
 
+	mp, err := assembleMeterProvider(metricExp, tp, res)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tp, mp, nil
+}
+
+// assembleMeterProvider 装配 metrics 管线尾段（#110，gRPC 与 HTTP 两条导出
+// 分支单源）：PeriodicReader（metricExportInterval）+ MeterProvider（挂
+// resource）+ runtime.Start + 失败回滚（mp 与传入的 trace provider 一并
+// Shutdown）。
+//
+// runtime.Start 必须显式指定 provider：无参 Start() 在调用时刻捕获
+// otel.GetMeterProvider()——此刻全局还是 noop（SetMeterProvider 在 Init
+// 返回后才执行），runtime 指标全部静默丢失；重复 Init 时则挂到上一轮已被
+// Shutdown 的 provider 上同样丢失。
+func assembleMeterProvider(metricExp metric.Exporter, tp *sdktrace.TracerProvider, res *resource.Resource) (*metric.MeterProvider, error) {
 	reader := metric.WithReader(metric.NewPeriodicReader(metricExp, metric.WithInterval(metricExportInterval)))
 	mp := metric.NewMeterProvider(reader, metric.WithResource(res))
-
-	// 必须显式指定 provider：无参 runtime.Start() 在调用时刻捕获
-	// otel.GetMeterProvider()——此刻全局还是 noop（SetMeterProvider 在
-	// Init 返回后才执行），runtime 指标全部静默丢失；重复 Init 时则挂到
-	// 上一轮已被 Shutdown 的 provider 上同样丢失
 	if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
 		_ = mp.Shutdown(context.Background())
 		_ = tp.Shutdown(context.Background())
-		return nil, nil, fmt.Errorf("tracing: start runtime metrics collector: %w", err)
+		return nil, fmt.Errorf("tracing: start runtime metrics collector: %w", err)
 	}
-	return tp, mp, nil
+	return mp, nil
 }
 
 // buildSampler 将 SampleRate 转换为采样器。

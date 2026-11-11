@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"strings"
 
-	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -59,6 +58,13 @@ func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, er
 	}
 	if !strings.Contains(raw, "://") {
 		// 无 scheme：host:port 形态，scheme 由 Insecure 决定。
+		// 带基址路径的写法（如 "collector:4318/api/otel"）不收（#112）：
+		// 整串被当 host:port 后 basePath 恒空，/api/otel 段静默丢失、导出
+		// 404 循环——与 validateGRPCEndpoint「不合规输入报错，不静默断供」
+		// 的既定哲学对齐。错误不回显端点原值（可能带凭据/令牌）。
+		if strings.Contains(raw, "/") {
+			return ep, errors.New("tracing: OTLP/HTTP endpoint contains a path but no scheme; write the full URL form (http://host:port/path or https://...)")
+		}
 		ep.hostPort = raw
 		return ep, nil
 	}
@@ -175,15 +181,9 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 		return nil, nil, fmt.Errorf("tracing: create otlp http metric exporter: %w", err)
 	}
 
-	reader := metric.WithReader(metric.NewPeriodicReader(metricExp, metric.WithInterval(metricExportInterval)))
-	mp := metric.NewMeterProvider(reader, metric.WithResource(res))
-
-	// 与 grpc 分支同一纪律：必须显式指定 provider（无参 runtime.Start() 在
-	// 调用时刻捕获的全局还是 noop，runtime 指标会静默丢失）。
-	if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
-		_ = mp.Shutdown(context.Background())
-		_ = tp.Shutdown(context.Background())
-		return nil, nil, fmt.Errorf("tracing: start runtime metrics collector: %w", err)
+	mp, err := assembleMeterProvider(metricExp, tp, res)
+	if err != nil {
+		return nil, nil, err
 	}
 	return tp, mp, nil
 }
