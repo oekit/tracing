@@ -2,12 +2,63 @@ package traceid
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/cloudwego/hertz/pkg/common/test/assert"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// TestKeyIsNotStandardContextKey 钉住 #115 的行为边界：Key 是 hertz
+// RequestContext 的字符串键，不是标准 context 的取回键——按 Key
+// context.WithValue 可编译，但 FromContext 永远取不到（标准 context 用
+// 未导出的类型化键 ctxKey）。行为面钉死，防止未来有人误把 Key 接进
+// context 语义「修兼容」。
+func TestKeyIsNotStandardContextKey(t *testing.T) {
+	//nolint:staticcheck // SA1029：本行**故意**用内置 string 当 context 键——钉住「按 Key 存取必然断链」的错误用法（#115 文档契约）
+	ctx := context.WithValue(context.Background(), Key, "via-key")
+	assert.DeepEqual(t, "", FromContext(ctx))
+
+	ctx = ContextWith(ctx, "via-ctx")
+	assert.DeepEqual(t, "via-ctx", FromContext(ctx))
+}
+
+// TestDoc_KeyNotContextValueKey 钉住 #115 的文档契约：此前 Key 的 godoc 与
+// 包文档都声称 Key 是「标准 context 中存储 trace_id 的键名」，与实现
+// （ctxKey{} 类型化键）相反——按文档写 context.WithValue(ctx, traceid.Key,
+// id) 可编译但全链路静默断链、零报错，唯一防线是文档显式警告。本测试钉住
+// ①两处文档都带警告、②旧的错误声称不再出现。
+func TestDoc_KeyNotContextValueKey(t *testing.T) {
+	coreRaw, err := os.ReadFile("core.go")
+	if err != nil {
+		t.Fatalf("read core.go: %v", err)
+	}
+	docRaw, err := os.ReadFile("doc.go")
+	if err != nil {
+		t.Fatalf("read doc.go: %v", err)
+	}
+	coreDoc, pkgDoc := string(coreRaw), string(docRaw)
+
+	for _, want := range []string{"RequestContext", "context.WithValue", "ctxKey"} {
+		if !strings.Contains(coreDoc, want) {
+			t.Errorf("traceid/core.go 的 Key godoc 缺 %q——必须写明 Key 仅用于 hertz RequestContext、标准 context 走 ContextWith/FromContext 的类型化键（#115）", want)
+		}
+	}
+	for _, want := range []string{"RequestContext", "context.WithValue"} {
+		if !strings.Contains(pkgDoc, want) {
+			t.Errorf("traceid/doc.go 的包文档缺 %q——Key 的用途口径必须与 core.go 一致（#115）", want)
+		}
+	}
+	for _, stale := range []string{
+		"在 Hertz RequestContext 与标准 context 中存储使用的键名", // core.go 旧声称
+		"标准库 context 与 RequestContext 中存储",            // doc.go 旧声称
+	} {
+		if strings.Contains(coreDoc, stale) || strings.Contains(pkgDoc, stale) {
+			t.Errorf("traceid 文档仍声称 Key 同时用于标准 context（%q）——与 ctxKey{} 实现相反，按文档写全链路静默断链（#115）", stale)
+		}
+	}
+}
 
 func TestContextWith_FromContext(t *testing.T) {
 	ctx := context.Background()
