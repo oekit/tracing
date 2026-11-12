@@ -158,10 +158,12 @@ type Config struct {
 //     （Endpoint 为空 / DisableMetrics=true）时，旧的 MeterProvider 不关闭、
 //     继续持有全局位导出——全局 otel.GetMeterProvider() 永远指向活实例，
 //     不会出现指向已 Shutdown 僵尸实例的窗口。被替换 provider 的原持有方
-//     再调用 Shutdown 会得到 already-shutdown 类错误，可安全忽略。
-//     meter 面的关闭沿「最近产出 meterProvider 的 Init」链追踪（#68）：
-//     「on→off→on」序列中第一个 on 的 MeterProvider 会在第二个 on 替换
-//     全局后被关闭，不再永久孤儿导出。常规服务应只 Init 一次
+//     再调用 Shutdown：tracer 面会得到 already-shutdown 类错误（可安全
+//     忽略）；meter 面在「仍持有全局位」的情形下**不关、不打错**（#121——
+//     关它等于杀掉全局指标，全局位由 Init/全局注册策略管理，跳过语义见
+//     Shutdown 的说明）。meter 面的关闭沿「最近产出 meterProvider 的 Init」
+//     链追踪（#68）：「on→off→on」序列中第一个 on 的 MeterProvider 会在
+//     第二个 on 替换全局后被关闭，不再永久孤儿导出。常规服务应只 Init 一次
 //   - 并发调用 Init 由包级互斥串行化（#100）：「创建→Set*→Swap/关前任」
 //     整个序列在临界区内，全局位不会因两步序列交错而指向已 Shutdown 僵尸
 func Init(cfg Config) (Provider, error) {
@@ -418,18 +420,49 @@ type providerImpl struct {
 // Shutdown 关闭并 flush tracing 与 metrics provider。
 // TracerProvider.Shutdown 会 flush 批量 span 处理器并关闭 OTLP 导出器，重复调用幂等；
 // MeterProvider.Shutdown 会 flush 周期读取器，重复调用返回 "already shutdown" 类错误。
-// 因此被重复 Init 自动关闭的 provider，其原持有方再调用本方法时会收到错误，可安全忽略。
+// 因此被重复 Init 自动关闭的 provider，其原持有方再调用本方法时 tracer 面会收到
+// already-shutdown 类错误，可安全忽略。
+//
+// #121 语义裁决（meter 面不再无条件关闭——全局位由 Init/全局注册策略管理）：
+// 本 impl 已被后续 Init 顶掉（installed.Load() != p）且其 meterProvider 仍持有
+// 全局 otel.GetMeterProvider() 位时——即 #52 语义下「后续 Init 未产出
+// meterProvider（Endpoint 空 / DisableMetrics=true），旧 meter 继续持有全局位
+// 导出」的活实例——本方法**跳过 meter 面的 Shutdown** 并打 Warn 留痕。此前
+// 无条件关闭会制造「全局 MeterProvider 指向已 Shutdown 僵尸实例」的窗口：
+// 全局指标静默全灭、零报错、不可恢复（打点全丢、周期读取器停摆），且恰是
+// README 推荐的 `defer provider.Shutdown(ctx)` 写法触发的。当前持有方
+// （installed.Load() == p）照常 Shutdown 以 flush——进程退出的 flush 契约
+// 不变；meter 面已易主的被顶掉方照常 Shutdown（收 already-shutdown 类错误，
+// 可安全忽略）。整个判定在 initMu 临界区内，与 Init 的「创建→Set*→Swap/
+// 关前任」序列串行化：并发 Init 进行中调用 Shutdown 不会把即将继续持有
+// 全局位的 meter 面关成僵尸。
 func (p *providerImpl) Shutdown(ctx context.Context) error {
+	initMu.Lock()
+	defer initMu.Unlock()
+
 	var errs []error
 	if p.tracerProvider != nil {
 		if err := p.tracerProvider.Shutdown(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if p.meterProvider != nil {
+	if p.meterProvider != nil && p.displacedMeterStillGlobal() {
+		tlog.Warn("meter provider shutdown skipped: this provider was displaced by a later Init " +
+			"but its MeterProvider still holds the global slot (global metrics stay alive, managed by Init)")
+	} else if p.meterProvider != nil {
 		if err := p.meterProvider.Shutdown(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// displacedMeterStillGlobal 判定 meter 面是否「已被顶掉但仍持有全局位」（#121）。
+// 当前持有方（installed.Load() == p）恒 false——正常退出路径必须照常 flush。
+// 调用方须持有 initMu（Init 的安装序列与 otel 全局位读写由此串行化）。
+func (p *providerImpl) displacedMeterStillGlobal() bool {
+	if installed.Load() == p {
+		return false
+	}
+	return otel.GetMeterProvider() == p.meterProvider
 }

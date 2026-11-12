@@ -73,6 +73,44 @@ func TestNoDirectCGOSQLiteDependency(t *testing.T) {
 	}
 }
 
+// noHTTPFrameworkDeps 是**禁止出现在根模块 go.mod require 段**里的
+// HTTP/RPC 框架依赖（#122）。
+//
+//	github.com/cloudwego/hertz —— 全仓唯一引用点曾是 traceid 测试的
+//	assert 包；kitex 是根包 doc.go 同一句承诺里的另一半框架。
+//
+// 缘由（与 #37 的 CGO sqlite 同一族）：根包 doc.go 明写「不依赖任何
+// HTTP/RPC 框架，纯 Kitex 服务引用本包不会引入 Hertz」——hertz 在 require
+// 段里时承诺即被打破，hertz 的依赖链（sonic/netpoll/gjson/protobuf 等）
+// 随本仓流向所有消费方的模块图与 go.sum。
+//
+// **唯一例外面是 tests/ 独立模块**（#122 修法）：只为 traceid 的 hertz
+// assert / 集成测试存在，隔离在自己的 go.mod 里，本门禁跳过 tests/ 目录。
+var noHTTPFrameworkDeps = []string{
+	"github.com/cloudwego/hertz",
+	"github.com/cloudwego/kitex",
+}
+
+// TestNoDirectHTTPFrameworkDependency 是「本包不引入 HTTP/RPC 框架」契约
+// （doc.go）的门禁（#122）：依赖升级 / 测试图省事都可能把框架悄悄带回
+// require 段，这条断言把承诺变成可执行契约。只扫根模块 go.mod——tests/
+// 独立模块是经 #122 裁决的 hertz 例外面。
+func TestNoDirectHTTPFrameworkDependency(t *testing.T) {
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("read root go.mod: %v", err)
+	}
+	for _, dep := range noHTTPFrameworkDeps {
+		for _, line := range requireLines(string(data)) {
+			if strings.Contains(line, dep) {
+				t.Errorf("根模块 go.mod 的 require 段直接依赖 HTTP/RPC 框架 %q——违反 doc.go"+
+					"「纯 Kitex 服务引用本包不会引入 Hertz」承诺；框架类依赖只能进 tests/ 独立模块（#122）", dep)
+			}
+		}
+	}
+}
+
 // requireLines 只取 go.mod 的 require 段（单行 require 与块状 require 都取），
 // 排除注释与其它段——否则 module / go / toolchain 行会被误判。
 func requireLines(content string) []string {
