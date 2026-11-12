@@ -1,3 +1,7 @@
+## [v0.4.3] — 2026-11-13
+
+- 1 单修复：gormotel 裸 Option→GormOption（#132，编译期守卫）；地板对齐 pkg v0.47.0/core v0.15.1。
+
 ## [v0.4.2] — 2026-11-12
 
 - Go 1.26 现代化：gormotel 导出签名 interface{}→any、并发 Init 测试 fan-out→wg.Go。纯等价重构，行为零变更。
