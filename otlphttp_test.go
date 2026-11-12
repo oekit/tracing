@@ -115,6 +115,84 @@ func TestParseOTLPHTTPEndpoint_SchemelessPathRejected(t *testing.T) {
 	}
 }
 
+// TestParseOTLPHTTPEndpoint_SchemelessCredentialQueryFragment 钉住 #123：
+// 无 scheme 分支此前只挡 "/"（#112 的路径段守卫），凭据（"@"）/query（"?"）/
+// fragment（"#"）三道守卫全在 scheme 分支的 url.Parse 之后 ⇒ 无 scheme 形态
+// 全部绕过：污染串原样进 hostPort，导出 URL 被转义成畸形主机名（Init 成功、
+// 零报错、APM 全黑），或在导出器构造阶段报错并把 token/凭据原样回显进错误
+// 信息。修复后两种写法必须同口径拒绝（同一份配置不再处置相反），错误文案
+// 与 scheme 分支逐字一致且不回显端点原值。
+func TestParseOTLPHTTPEndpoint_SchemelessCredentialQueryFragment(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		secret   string
+		wantMsg  string
+	}{
+		{
+			name:     "query token is rejected",
+			endpoint: "collector:4318?api_key=SECRET-TOKEN",
+			secret:   "SECRET-TOKEN",
+			wantMsg:  "must not carry query parameters; use Config.Headers instead",
+		},
+		{
+			name:     "fragment is rejected",
+			endpoint: "collector:4318#SECRET-FRAGMENT",
+			secret:   "SECRET-FRAGMENT",
+			wantMsg:  "must not carry a fragment; it is never sent to the server, use Config.Headers for auth",
+		},
+		{
+			name:     "embedded credentials are rejected",
+			endpoint: "user:pass@collector:4318",
+			secret:   "user:pass",
+			wantMsg:  "must not embed credentials; use Config.Headers instead",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseOTLPHTTPEndpoint(tc.endpoint, false)
+			if err == nil {
+				t.Fatalf("parseOTLPHTTPEndpoint(%q) error = nil, want error（无 scheme 形态漏过守卫：hostPort=%q）", tc.endpoint, got.hostPort)
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("error should be同口径 with scheme-form wording %q, got: %v", tc.wantMsg, err)
+			}
+			if strings.Contains(err.Error(), tc.secret) {
+				t.Errorf("error leaks endpoint credentials %q: %v", tc.secret, err)
+			}
+		})
+	}
+	// 对照组：纯 host:port（文档明列的合法形态之一）不受守卫误伤。
+	ep, err := parseOTLPHTTPEndpoint("otel-collector:4318", false)
+	if err != nil {
+		t.Fatalf("plain host:port rejected: %v", err)
+	}
+	if ep.hostPort != "otel-collector:4318" {
+		t.Errorf("hostPort = %q, want %q", ep.hostPort, "otel-collector:4318")
+	}
+}
+
+// TestInit_SchemelessEndpointWithQueryRejectedWithoutEcho 钉住 #123 的
+// Init 级回归（E2E 面守卫）：无 scheme 端点携带 query token 时 Init 必须
+// 显式失败，且错误信息不回显 token——此前静默通过，token 经导出器构造错误
+// 原样回显进日志/告警系统。校验发生在解析层（导出器构造之前），无网络动作。
+func TestInit_SchemelessEndpointWithQueryRejectedWithoutEcho(t *testing.T) {
+	_, err := Init(Config{
+		ServiceName: "svc",
+		Endpoint:    "127.0.0.1:4318?api_key=SECRET-TOKEN",
+		Protocol:    ProtocolHTTP,
+	})
+	if err == nil {
+		t.Fatal("Init with scheme-less endpoint carrying query token must return an error (#123)")
+	}
+	if strings.Contains(err.Error(), "SECRET-TOKEN") {
+		t.Errorf("Init error leaks endpoint token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Config.Headers") {
+		t.Errorf("error should point at Config.Headers, got: %v", err)
+	}
+}
+
 // TestOTLPHTTPEndpoint_SignalPaths signal 路径推导：端点指到哪个 signal，
 // 另一个按同前缀换名；否则基址后拼标准路径。
 func TestOTLPHTTPEndpoint_SignalPaths(t *testing.T) {

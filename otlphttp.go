@@ -54,6 +54,10 @@ type otlpHTTPEndpoint struct {
 // token，401/403 重试耗尽数据全丢，而配置里的 token「明明配了」。与内嵌
 // 凭据同一纪律：显式报错并指向 Config.Headers（query 里的密钥同样会进
 // 访问日志/代理日志）；fragment 本来就不会发给服务端，出现即配置错误。
+// 凭据/query/fragment 三道守卫对**无 scheme 形态同样生效**（#123）：该形态
+// 不走 url.Parse，此前全部绕过守卫——污染串原样进 hostPort，导出 URL 被
+// 转义成畸形主机名（Init 成功、零报错、APM 全黑），或在导出器构造阶段报错
+// 并把 token/凭据原样回显进错误信息。
 func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, error) {
 	ep := otlpHTTPEndpoint{insecure: insecure}
 	raw := strings.TrimSpace(endpoint)
@@ -66,6 +70,18 @@ func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, er
 			// 路径段无声丢失 ⇒ 显式报错让调用方补 scheme（#112）。错误不回显
 			// 端点原值——无 scheme 形态也可能内嵌凭据/令牌。
 			return ep, errors.New("tracing: scheme-less OTLP/HTTP endpoint must be plain \"host:port\" (e.g. \"otel-collector:4318\"); a base path requires an explicit scheme (e.g. \"https://host:4318/api/otel\")")
+		}
+		// 凭据/query/fragment 守卫（#123）：与 scheme 分支（url.Parse 后的
+		// u.User/u.RawQuery/u.Fragment 三道）同口径，错误文案逐字一致且不
+		// 回显端点原值——无 scheme 形态同样可能内嵌凭据/令牌。
+		if strings.Contains(raw, "@") {
+			return ep, errors.New("tracing: OTLP/HTTP endpoint must not embed credentials; use Config.Headers instead")
+		}
+		if strings.Contains(raw, "?") {
+			return ep, errors.New("tracing: OTLP/HTTP endpoint must not carry query parameters; use Config.Headers instead")
+		}
+		if strings.Contains(raw, "#") {
+			return ep, errors.New("tracing: OTLP/HTTP endpoint must not carry a fragment; it is never sent to the server, use Config.Headers for auth")
 		}
 		// 无 scheme：host:port 形态，scheme 由 Insecure 决定。
 		ep.hostPort = raw
