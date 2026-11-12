@@ -1,3 +1,7 @@
+## [v0.4.2] — 2026-11-12
+
+- Go 1.26 现代化：gormotel 导出签名 interface{}→any、并发 Init 测试 fan-out→wg.Go。纯等价重构，行为零变更。
+
 ## [v0.4.1] — 2026-11-12
 
 - fix(init): parseOTLPHTTPEndpoint 无 scheme 分支显式拒绝带路径段，不再静默断供（#112）——"collector:4318/api/otel"（漏写 scheme 但带基址路径）此前被整串当 host:port 收下、basePath 恒空，最终导出打 https://collector:4318/v1/traces 而 /api/otel 段无声丢失：Init 成功、导出 404 循环，与 validateGRPCEndpoint「不合规输入报错，不静默断供」的既定纪律相悖；修复为无 scheme 且含 "/"（含尾斜杠）直接报错并提示补 scheme（"https://host:4318/api/otel"），错误不回显端点原值（无 scheme 形态也可能内嵌凭据，与内嵌凭据拒绝同一口径），补 parse 回归测试（基址路径/无端口带路径/尾斜杠三形态）
