@@ -484,9 +484,7 @@ func TestInit_ConcurrentInit_NoZombieGlobalProvider(t *testing.T) {
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		for range goroutines {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				<-start
 				p, ierr := Init(Config{ServiceName: "concurrent-svc", SampleRate: 1})
 				if ierr != nil {
@@ -496,7 +494,7 @@ func TestInit_ConcurrentInit_NoZombieGlobalProvider(t *testing.T) {
 				// 不在此处 Shutdown：落选 provider 由 Swap 链自动关闭，
 				// 当前全局 provider 必须保持活体供下方判据。
 				_ = p
-			}()
+			})
 		}
 		close(start)
 		wg.Wait()
