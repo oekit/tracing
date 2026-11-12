@@ -37,25 +37,31 @@ type otelPlugin struct {
 	queryFormatter         func(query string) string
 }
 
-// Option 是插件的配置函数类型。
-type Option func(p *otelPlugin)
+// GormOption 是插件的配置函数类型。
+//
+// 命名遵循本仓 AGENTS.md「函数选项模式 XxxOption（禁止裸 Option，多包 co-import
+// 冲突）」：gorm 本体同样导出 gorm.Option（接口形态），插件包再导出裸 Option 时，
+// 消费方 dot-import 插件包与 gorm 本体会在编译期撞名（gormotel#132 实测
+// Option redeclared）。原 ekit-gorm 的 OtelOption 迁入时曾误改成裸名，本类型
+// 即其合规形态。
+type GormOption func(p *otelPlugin)
 
 // WithTracerProvider 设置自定义的 OpenTelemetry TracerProvider。
-func WithTracerProvider(provider trace.TracerProvider) Option {
+func WithTracerProvider(provider trace.TracerProvider) GormOption {
 	return func(p *otelPlugin) {
 		p.provider = provider
 	}
 }
 
 // WithAttributes 添加额外的 Span 属性。
-func WithAttributes(attrs ...attribute.KeyValue) Option {
+func WithAttributes(attrs ...attribute.KeyValue) GormOption {
 	return func(p *otelPlugin) {
 		p.attrs = append(p.attrs, attrs...)
 	}
 }
 
 // WithDBName 设置数据库名称属性（db.namespace）。
-func WithDBName(name string) Option {
+func WithDBName(name string) GormOption {
 	return func(p *otelPlugin) {
 		p.attrs = append(p.attrs, semconv.DBNamespace(name))
 	}
@@ -64,28 +70,28 @@ func WithDBName(name string) Option {
 // WithServerAddress 设置 server.address Span 属性。
 // Dialector 接口取不到连接地址，无法自动探测，由此显式配置
 // （原 gormx 插件仅支持 MySQL 自动提取，本选项为通用替代）。
-func WithServerAddress(addr string) Option {
+func WithServerAddress(addr string) GormOption {
 	return func(p *otelPlugin) {
 		p.serverAddress = addr
 	}
 }
 
 // WithoutQueryVariables 在 Span 中排除 SQL 查询变量，仅记录 SQL 模板。
-func WithoutQueryVariables() Option {
+func WithoutQueryVariables() GormOption {
 	return func(p *otelPlugin) {
 		p.excludeQueryVars = true
 	}
 }
 
 // WithQueryFormatter 设置自定义的查询语句格式化函数。
-func WithQueryFormatter(fn func(query string) string) Option {
+func WithQueryFormatter(fn func(query string) string) GormOption {
 	return func(p *otelPlugin) {
 		p.queryFormatter = fn
 	}
 }
 
 // WithRecordStackTrace 在 Span 结束时记录堆栈跟踪信息。
-func WithRecordStackTrace() Option {
+func WithRecordStackTrace() GormOption {
 	return func(p *otelPlugin) {
 		p.recordStackTraceInSpan = true
 	}
@@ -93,7 +99,7 @@ func WithRecordStackTrace() Option {
 
 // NewPlugin 创建 GORM 的 OpenTelemetry 追踪插件实例。
 // 经 db.Use(plugin) 显式接入（原 gormx.NewOtelPlugin，v0.2.0 迁入本包）。
-func NewPlugin(opts ...Option) gorm.Plugin {
+func NewPlugin(opts ...GormOption) gorm.Plugin {
 	p := &otelPlugin{}
 	for _, opt := range opts {
 		opt(p)
