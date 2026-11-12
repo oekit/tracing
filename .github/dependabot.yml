@@ -10,3 +10,13 @@ updates:
       all-deps:
         patterns:
           - "*"
+  # 嵌套模块 tests 独立 go.mod：不登记则其依赖永远不会被提议升级且无任何报错
+  # （2026-11-12 audit 发现，matrix-tools#300）。
+  - package-ecosystem: gomod
+    directory: /tests
+    schedule:
+      interval: weekly
+    groups:
+      all-deps:
+        patterns:
+          - "*"
