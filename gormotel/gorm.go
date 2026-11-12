@@ -204,7 +204,7 @@ type rowConnPool struct {
 	span trace.Span
 }
 
-func (w rowConnPool) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+func (w rowConnPool) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	row := w.ConnPool.QueryRowContext(ctx, query, args...)
 	recordSpanError(w.span, row.Err())
 	return row
