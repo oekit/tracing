@@ -33,6 +33,7 @@
 // 失败错误归因为「DB 没问题」。
 //
 // 迁移说明：原 gormx.NewOtelPlugin / gormx.OtelOption（ekit-gorm v0.1.x）已迁入本包，
-// 更名 NewPlugin / Option；server.address 由 MySQL Dialector 自动探测
+// 更名 NewPlugin / GormOption（选项类型沿用 XxxOption 口径——裸 Option 与 gorm 本体的
+// gorm.Option 在 dot-import 场景撞名，且违反本仓 AGENTS.md 命名红线）；server.address 由 MySQL Dialector 自动探测
 // 改为 WithServerAddress(addr) 显式配置（Dialector 接口取不到连接地址）。
 package gormotel
