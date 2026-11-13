@@ -8,7 +8,7 @@ go 1.26.0
 
 require (
 	github.com/cloudwego/hertz v0.10.6
-	github.com/oekit/tracing v0.4.4
+	github.com/oekit/tracing v0.4.5
 	go.opentelemetry.io/otel/trace v1.47.0
 )
 
