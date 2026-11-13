@@ -1,3 +1,9 @@
+## [v0.4.5] — 2026-11-13
+
+- Provider/端点契约：Shutdown 不再无条件关全局 MeterProvider（#121）、traceid 测试独立模块去 hertz 依赖（#122）、无 scheme 端点凭据守卫（#123）、gormotel 裸 Option 改名（#132）、gRPC Endpoint 校验三形态补全（#133）
+
+关联问题单：tracing#121、tracing#122、tracing#123、tracing#132、tracing#133。
+
 ## [v0.4.4] — 2026-11-13
 
 - fix: gRPC Endpoint 拒绝 query/内嵌凭据/空白三类污染形态（#133）——host:port 形态内污染此前全部静默放行：query token 被 gRPC 传输静默丢弃（连接照建、鉴权头恒空，#99 故障模式复现）、内嵌凭据零拨号且违反「URL 凭据进访问日志」纪律、空白端点拨号目标被污染导出永不拨通；修复后三类显式报错并指向 Config.Headers（gRPC 鉴权走 OTLP metadata，与 HTTP 侧 #99/#123 同口径），错误不回显端点原值
