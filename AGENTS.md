@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/tracing
 
 > OpenTelemetry 追踪 + trace_id 真相源（v0.3.0 起 OTLP 双协议导出：gRPC 缺省 / HTTP，Config.Protocol + Headers，切换协议不丢传播器/指标/旧 provider 关闭）
-> 当前版本：`v0.4.3` · module：`github.com/oekit/tracing` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.4.4` · module：`github.com/oekit/tracing` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `./`、`gormotel/`、`httpotel/`、`redisotel/`、`traceid/`
