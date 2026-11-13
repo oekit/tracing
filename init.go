@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/oekit/logx"
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
@@ -351,18 +352,40 @@ func buildSampler(rate float64) sdktrace.Sampler {
 	return sdktrace.AlwaysSample()
 }
 
-// validateGRPCEndpoint 校验 gRPC 分支的 Endpoint 形态（#98）。
+// validateGRPCEndpoint 校验 gRPC 分支的 Endpoint 形态（#98、#133）。
 //
 // gRPC 导出器把 Endpoint 当拨号目标（host:port）解析，URL 形态解析不出可用
 // 地址：Init 成功返回 provider 但一次都不拨号，span/metric 在后台导出重试里
 // 无声耗尽（「服务正常但 APM 全黑」）。与 http 分支的端点校验、resolveProtocol
 // 对未知协议的处置同一纪律：不合规输入报错，不静默断供；URL 形态端点请改设
-// Protocol:"http"（OTLP/HTTP 分支原生接受 URL）。错误不回显端点原值——URL
-// 形态端点可能内嵌凭据/令牌，不进日志与错误信息。
+// Protocol:"http"（OTLP/HTTP 分支原生接受 URL）。
+//
+// host:port 形态内同样拒绝三类污染（#133，与 HTTP 侧 #99/#123 同口径）：
+//   - query（"host:port?token=X"）：gRPC 传输根本不消费 query——连接照建但
+//     token 静默丢弃，鉴权头永远为空，401/403 重试耗尽数据全丢，而配置里的
+//     token「明明配了」（#99 的故障模式在 gRPC 侧原样复现）；gRPC 鉴权走
+//     metadata（Config.Headers），不是 query；
+//   - 内嵌凭据（"user:pass@host:port"）：凭据进不了鉴权面，只会污染拨号
+//     目标（零拨号、静默断供），且违反「URL 里的凭据会进访问日志」纪律
+//     （HTTP 侧同形态显式拒绝并指向 Config.Headers）；
+//   - 前后/内部空白：拨号目标被污染（"  host:4317  " 拨不出主机），Init 成功
+//     但导出永远拨不通（零拨号）。端点形态里空白永远非法，宁可报错不静默
+//     trim（静默 trim 会把「配置里写的是什么」与「实际拨的是什么」割裂开）。
+//
+// 错误不回显端点原值——污染串大概率内嵌凭据/令牌，不进日志与错误信息。
 func validateGRPCEndpoint(endpoint string) error {
 	if strings.Contains(endpoint, "://") || strings.Contains(endpoint, "/") {
 		return errors.New("tracing: gRPC Config.Endpoint must be \"host:port\" (e.g. \"otel-collector:4317\"); " +
 			"URL-form endpoint must set Protocol: \"http\"")
+	}
+	if strings.Contains(endpoint, "?") {
+		return errors.New("tracing: gRPC Config.Endpoint must not carry query parameters; the gRPC transport never consumes query, so the token would be silently dropped — use Config.Headers instead (OTLP metadata)")
+	}
+	if strings.Contains(endpoint, "@") {
+		return errors.New("tracing: gRPC Config.Endpoint must not embed credentials; use Config.Headers instead (OTLP metadata)")
+	}
+	if strings.ContainsFunc(endpoint, unicode.IsSpace) {
+		return errors.New("tracing: gRPC Config.Endpoint must be plain \"host:port\" without whitespace (a padded endpoint dials a polluted target and exports nothing); trim the value")
 	}
 	return nil
 }

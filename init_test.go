@@ -522,3 +522,102 @@ func TestValidateGRPCEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateGRPCEndpoint_PollutionForms 钉住 #133：host:port 形态内的三类
+// 污染此前全部放行——
+//   - query（"host:port?token=X"）：gRPC 传输不消费 query，token 静默丢弃
+//     （连接照建、鉴权头恒空，#99 故障模式在 gRPC 侧复现）；
+//   - 内嵌凭据（"user:pass@host:port"）：零拨号且违反「URL 凭据进访问日志」
+//     纪律（HTTP 侧同形态显式拒绝）；
+//   - 前后/内部空白：拨号目标被污染，Init 成功但导出永远拨不通。
+//
+// 修复后三类必须显式报错并指向 Config.Headers（与 HTTP 侧 #99/#123 文案同
+// 口径），且错误不回显端点原值（污染串大概率内嵌凭据/令牌）。
+func TestValidateGRPCEndpoint_PollutionForms(t *testing.T) {
+	cases := []struct {
+		name        string
+		target      string
+		secret      string
+		wantMsg     string
+		wantHeaders bool // 凭据/query 类指向 Config.Headers；空白类的修复是 trim
+	}{
+		{
+			name:        "query token is rejected",
+			target:      "127.0.0.1:4317?token=SECRET-TOKEN",
+			secret:      "SECRET-TOKEN",
+			wantMsg:     "must not carry query parameters",
+			wantHeaders: true,
+		},
+		{
+			name:        "embedded credentials are rejected",
+			target:      "otel-user:S3cret-Pass@127.0.0.1:4317",
+			secret:      "S3cret-Pass",
+			wantMsg:     "must not embed credentials",
+			wantHeaders: true,
+		},
+		{
+			name:    "leading/trailing whitespace is rejected",
+			target:  "  127.0.0.1:4317  ",
+			secret:  "  127.0.0.1:4317  ",
+			wantMsg: "without whitespace",
+		},
+		{
+			name:    "internal whitespace is rejected",
+			target:  "host name:4317",
+			secret:  "host name:4317",
+			wantMsg: "without whitespace",
+		},
+		{
+			name:    "tab/newline padding is rejected",
+			target:  "\t127.0.0.1:4317\n",
+			secret:  "127.0.0.1:4317",
+			wantMsg: "without whitespace",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateGRPCEndpoint(tc.target)
+			if err == nil {
+				t.Fatalf("validateGRPCEndpoint(%q) = nil, want error（#133：污染形态静默放行 ⇒ token 丢弃/零拨号）", tc.target)
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("error should mention %q, got: %v", tc.wantMsg, err)
+			}
+			if tc.wantHeaders && !strings.Contains(err.Error(), "Config.Headers") {
+				t.Errorf("error should point at Config.Headers (gRPC auth is metadata, not query/URL), got: %v", err)
+			}
+			if strings.Contains(err.Error(), tc.secret) {
+				t.Errorf("error leaks endpoint content %q: %v", tc.secret, err)
+			}
+		})
+	}
+	// 对照组：纯 host:port 不受守卫误伤（#98 既有合法面不回退）。
+	if err := validateGRPCEndpoint("otel-collector:4317"); err != nil {
+		t.Errorf("plain host:port rejected: %v", err)
+	}
+}
+
+// TestInit_GRPCPollutedEndpointRejectedWithoutEcho 钉住 #133 的 Init 级回归
+// （E2E 面守卫，对照 HTTP 侧 #123 同款）：gRPC 缺省协议下携带 query token 的
+// 端点必须显式 Init 失败且不回显 token——此前静默通过，token 经 gRPC 传输
+// 静默丢弃（连接照建、鉴权头恒空）。校验发生在导出器构造之前，无网络动作。
+func TestInit_GRPCPollutedEndpointRejectedWithoutEcho(t *testing.T) {
+	_, err := Init(Config{
+		ServiceName: "svc",
+		Endpoint:    "127.0.0.1:4317?token=SECRET-TOKEN",
+	})
+	if err == nil {
+		t.Fatal("Init with gRPC endpoint carrying query token must return an error (#133)")
+	}
+	if strings.Contains(err.Error(), "SECRET-TOKEN") {
+		t.Errorf("Init error leaks endpoint token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Config.Headers") {
+		t.Errorf("error should point at Config.Headers, got: %v", err)
+	}
+	// 空白端点同样在 Init 面拒绝（零拨号形态，#98 修复的「Init 成功却一次
+	// 都不拨号」换入口复发）。
+	if _, err := Init(Config{ServiceName: "svc", Endpoint: "  127.0.0.1:4317  "}); err == nil {
+		t.Fatal("Init with whitespace-padded gRPC endpoint must return an error (#133)")
+	}
+}
