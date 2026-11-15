@@ -316,6 +316,60 @@ func TestInit_NaNSampleRateRejected(t *testing.T) {
 	}
 }
 
+// TestInit_EmptyServiceName_FailFast 钉住 #168：ServiceName 必填——空串会以
+// 「最后一个 detector」身份按 otel Merge 契约（b 覆盖 a，即使值为空）压过
+// OTEL_RESOURCE_ATTRIBUTES 与 resource.Default 的 unknown_service，全部
+// span/metric 按空服务名聚合且零报错。校验先于任何全局副作用，无网络动作。
+func TestInit_EmptyServiceName_FailFast(t *testing.T) {
+	// 环境变量里配了 service.name 也不能让空 Config 溜过去：这正是 #168 的
+	// 反面——此前空值会把这里的 env-svc 静默压掉，现在空值本身直接报错。
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=env-svc")
+
+	before := installed.Load()
+	_, err := Init(Config{Endpoint: "localhost:4317", Insecure: true})
+	if err == nil {
+		t.Fatal("Init with empty ServiceName must return an error (#168)")
+	}
+	if !strings.Contains(err.Error(), "ServiceName") {
+		t.Errorf("error should mention ServiceName, got: %v", err)
+	}
+	if installed.Load() != before {
+		t.Fatal("empty ServiceName must fail before any global side effect (no provider installed)")
+	}
+
+	// 对照：非空 ServiceName 正常 Init（Endpoint 空 = 本地 provider，零网络）。
+	p, err := Init(Config{ServiceName: "cfg-svc"})
+	if err != nil {
+		t.Fatalf("Init with non-empty ServiceName error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("Init returned nil provider")
+	}
+	_ = p.Shutdown(context.Background())
+}
+
+// TestNewResource_ServiceNameOverridesEnv 钉住 #168 的优先级对照面：非空
+// Config.ServiceName 排在 detector 链最后，按 Merge 契约覆盖
+// OTEL_RESOURCE_ATTRIBUTES 里的 service.name——这正是空值危害的另一面
+// （空值同样会覆盖，Init 已 fail-fast 挡住）；非空面保持 Config 优先，
+// env 的其余属性照常合并进来。
+func TestNewResource_ServiceNameOverridesEnv(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=env-svc,deployment.environment=prod")
+
+	res := newResource(Config{ServiceName: "cfg-svc"})
+	v, ok := res.Set().Value(attribute.Key("service.name"))
+	if !ok {
+		t.Fatal("resource missing service.name attribute")
+	}
+	if v.AsString() != "cfg-svc" {
+		t.Errorf("service.name = %q, want %q (Config.ServiceName must win over OTEL_RESOURCE_ATTRIBUTES)", v.AsString(), "cfg-svc")
+	}
+	dv, ok := res.Set().Value(attribute.Key("deployment.environment"))
+	if !ok || dv.AsString() != "prod" {
+		t.Errorf("deployment.environment = %v (ok=%v), want \"prod\" merged from OTEL_RESOURCE_ATTRIBUTES", dv, ok)
+	}
+}
+
 // warnCapture 捕获 Warn 事件的记录型 Logger（其余方法经嵌入接口兜底，
 // 测试保证不会触达）。
 type warnCapture struct {

@@ -83,7 +83,12 @@ const (
 
 // Config 是 OpenTelemetry Provider 的配置。
 type Config struct {
-	// ServiceName 服务名称，如 "wechat"、"fuxi_engine"。
+	// ServiceName 服务名称，如 "wechat"、"fuxi_engine"。**必填**：写入
+	// resource 的 service.name 属性；空串会让显式注入的空值按 otel Merge
+	// 契约（「b 覆盖 a，即使 b 的值为空」）压过 OTEL_RESOURCE_ATTRIBUTES
+	// 与 resource.Default 的 unknown_service，全部 span/metric 按空服务名
+	// 聚合且零报错（#168）。空值 Init 直接报错 fail-fast，与
+	// SampleRate 负值 / 未知 Protocol 同口径。
 	ServiceName string
 
 	// Endpoint OTLP 端点。
@@ -171,6 +176,14 @@ func Init(cfg Config) (Provider, error) {
 	initMu.Lock()
 	defer initMu.Unlock()
 
+	// ServiceName 必填（#168）：空串写进 resource 会以「最后一个 detector」
+	// 身份压过 OTEL_RESOURCE_ATTRIBUTES 与 resource.Default（Merge 契约：
+	// b 覆盖 a 即使值为空），表现为「运维在环境变量里配的 service.name
+	// 静默失效、全部 span 按空服务名聚合」。校验先于任何全局副作用。
+	if cfg.ServiceName == "" {
+		return nil, errors.New("tracing: ServiceName is required (it is written as resource service.name; " +
+			"an empty value would silently override OTEL_RESOURCE_ATTRIBUTES and resource.Default)")
+	}
 	if err := validateSampleRate(cfg.SampleRate); err != nil {
 		return nil, err
 	}
