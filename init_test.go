@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -447,6 +448,74 @@ func TestInit_ZeroSampleRate_WarnsAndSucceeds(t *testing.T) {
 		t.Fatal("SampleRate=0 must emit a WARN explaining it means full sampling")
 	}
 	_ = p.Shutdown(context.Background())
+}
+
+// TestInit_ReInit_OrphanedInstrumentationStopsExporting 钉住 #170：re-Init
+// 关闭旧 TracerProvider 后，构造期固化了 tracer 的 instrumentation
+// （gormotel.NewPlugin 在构造期 otel.GetTracerProvider().Tracer(...)）的
+// span 静默不再导出——SDK 不报错、本包此前零日志。用 sdktrace 内存
+// exporter 把孤儿行为钉死：re-Init 前同一 tracer 正常导出、之后不再到达
+// exporter；从新全局重建后恢复正常导出；re-Init 必须打 WARN 点名风险。
+func TestInit_ReInit_OrphanedInstrumentationStopsExporting(t *testing.T) {
+	cap := &warnCapture{}
+	orig := logx.Default()
+	logx.SetDefault(cap)
+	t.Cleanup(func() { logx.SetDefault(orig) })
+
+	// 第一次 Init（Endpoint 空 = 本地 provider，零网络；SampleRate=1 不打
+	// SampleRate WARN，避免污染本测试的 WARN 判据）。
+	p1, err := Init(Config{ServiceName: "svc-orphan-a", SampleRate: 1})
+	if err != nil {
+		t.Fatalf("first Init() error: %v", err)
+	}
+	tp1 := p1.(*providerImpl).tracerProvider
+
+	// 给旧 provider 挂内存 exporter（SimpleSpanProcessor 同步导出，判据确定）。
+	exp1 := tracetest.NewInMemoryExporter()
+	tp1.RegisterSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp1))
+
+	// 构造期固化 tracer——复刻 gormotel.NewPlugin 的取 tracer 方式。
+	cached := otel.GetTracerProvider().Tracer("orphan-test")
+
+	_, span := cached.Start(context.Background(), "before-reinit")
+	span.End()
+	if n := len(exp1.GetSpans()); n != 1 {
+		t.Fatalf("before re-Init: exported %d spans, want 1", n)
+	}
+
+	// 第二次 Init ⇒ 旧 provider 被 Shutdown（其 span 处理器/导出器关停）。
+	p2, err := Init(Config{ServiceName: "svc-orphan-b", SampleRate: 1})
+	if err != nil {
+		t.Fatalf("second Init() error: %v", err)
+	}
+	defer func() { _ = p2.Shutdown(context.Background()) }()
+
+	// 孤儿面：同一 cached tracer 的 span 仍能创建（SDK 不报错），但不再导出。
+	_, span = cached.Start(context.Background(), "after-reinit")
+	span.End()
+	if n := len(exp1.GetSpans()); n != 0 {
+		t.Fatalf("cached tracer spans must stop exporting after re-Init (#170), got %d spans", n)
+	}
+
+	// 对照面：从新全局构造的 instrumentation 正常导出（重建即可恢复）。
+	tp2 := p2.(*providerImpl).tracerProvider
+	exp2 := tracetest.NewInMemoryExporter()
+	tp2.RegisterSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp2))
+	_, span = otel.GetTracerProvider().Tracer("orphan-test").Start(context.Background(), "rebuilt")
+	span.End()
+	if n := len(exp2.GetSpans()); n != 1 {
+		t.Fatalf("rebuilt instrumentation exported %d spans, want 1", n)
+	}
+
+	// re-Init 必须打 WARN 点名「构造期固化的 instrumentation 必须重建」。
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	for _, w := range cap.warns {
+		if strings.Contains(w, "re-Init") && strings.Contains(w, "rebuild") {
+			return
+		}
+	}
+	t.Fatalf("re-Init must WARN about orphaned instrumentation (#170), got warns: %v", cap.warns)
 }
 
 // TestValidateSampleRate 单元钉住校验函数的边界。

@@ -49,6 +49,13 @@
 // 不会指向已 Shutdown 僵尸实例。常规服务应只 Init 一次（bootstrap 已
 // 保证）。
 //
+// ⚠️ 硬契约（#170）：re-Init 关闭旧 TracerProvider 之后，所有在上一次
+// Init 之前/之间构造的 instrumentation（gormotel.NewPlugin、otelhttp
+// WrapTransport、hertzotel.NewServerTracing 等在构造期固化 tracer 的
+// 插件）**必须重建**——其 tracer 仍指向已 Shutdown 的 provider，span
+// 静默不再导出（SDK 不报错、零日志）。Init 在 re-Init 时打 WARN 点名
+// 该风险。
+//
 // # 与 bootstrap 集成
 //
 // bootstrap.Run 会自动初始化 tracing：

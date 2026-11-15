@@ -228,6 +228,13 @@ func Init(cfg Config) (Provider, error) {
 	//     ——不是上一任 impl：on→off→on 序列里上一任（off）没有 meter 面，
 	//     真正被替换出局的是更早那个 on 的 meterProvider（#68 孤儿）。
 	if prev := installed.Swap(p); prev != nil {
+		// re-Init 的已知代价必须留痕（#170）：构造期固化了 tracer 的
+		// instrumentation（gormotel.NewPlugin、otelhttp、hertzotel 等拿到的
+		// 是旧 provider 的 tracer）在旧 provider Shutdown 后 span 静默不再
+		// 导出——SDK 不报错、本包此前也不打日志，「APM 全黑」零线索。
+		tlog.Warn("re-Init: instrumentation constructed before/between Init calls " +
+			"(gormotel.NewPlugin, otelhttp, hertzotel.NewServerTracing, ...) caches the previous " +
+			"TracerProvider — rebuild it after re-Init or its spans silently stop exporting (#170)")
 		abandonCtx, cancel := context.WithTimeout(context.Background(), abandonShutdownTimeout)
 		defer cancel()
 		_ = prev.tracerProvider.Shutdown(abandonCtx) // tracer 面始终被本次替换
