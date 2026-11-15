@@ -83,7 +83,12 @@ const (
 
 // Config 是 OpenTelemetry Provider 的配置。
 type Config struct {
-	// ServiceName 服务名称，如 "wechat"、"fuxi_engine"。
+	// ServiceName 服务名称，如 "wechat"、"fuxi_engine"。**必填**：写入
+	// resource 的 service.name 属性；空串会让显式注入的空值按 otel Merge
+	// 契约（「b 覆盖 a，即使 b 的值为空」）压过 OTEL_RESOURCE_ATTRIBUTES
+	// 与 resource.Default 的 unknown_service，全部 span/metric 按空服务名
+	// 聚合且零报错（#168）。空值 Init 直接报错 fail-fast，与
+	// SampleRate 负值 / 未知 Protocol 同口径。
 	ServiceName string
 
 	// Endpoint OTLP 端点。
@@ -171,6 +176,14 @@ func Init(cfg Config) (Provider, error) {
 	initMu.Lock()
 	defer initMu.Unlock()
 
+	// ServiceName 必填（#168）：空串写进 resource 会以「最后一个 detector」
+	// 身份压过 OTEL_RESOURCE_ATTRIBUTES 与 resource.Default（Merge 契约：
+	// b 覆盖 a 即使值为空），表现为「运维在环境变量里配的 service.name
+	// 静默失效、全部 span 按空服务名聚合」。校验先于任何全局副作用。
+	if cfg.ServiceName == "" {
+		return nil, errors.New("tracing: ServiceName is required (it is written as resource service.name; " +
+			"an empty value would silently override OTEL_RESOURCE_ATTRIBUTES and resource.Default)")
+	}
 	if err := validateSampleRate(cfg.SampleRate); err != nil {
 		return nil, err
 	}
@@ -215,6 +228,13 @@ func Init(cfg Config) (Provider, error) {
 	//     ——不是上一任 impl：on→off→on 序列里上一任（off）没有 meter 面，
 	//     真正被替换出局的是更早那个 on 的 meterProvider（#68 孤儿）。
 	if prev := installed.Swap(p); prev != nil {
+		// re-Init 的已知代价必须留痕（#170）：构造期固化了 tracer 的
+		// instrumentation（gormotel.NewPlugin、otelhttp、hertzotel 等拿到的
+		// 是旧 provider 的 tracer）在旧 provider Shutdown 后 span 静默不再
+		// 导出——SDK 不报错、本包此前也不打日志，「APM 全黑」零线索。
+		tlog.Warn("re-Init: instrumentation constructed before/between Init calls " +
+			"(gormotel.NewPlugin, otelhttp, hertzotel.NewServerTracing, ...) caches the previous " +
+			"TracerProvider — rebuild it after re-Init or its spans silently stop exporting (#170)")
 		abandonCtx, cancel := context.WithTimeout(context.Background(), abandonShutdownTimeout)
 		defer cancel()
 		_ = prev.tracerProvider.Shutdown(abandonCtx) // tracer 面始终被本次替换
@@ -414,8 +434,16 @@ func defaultPropagator() propagation.TextMapPropagator {
 	)
 }
 
-// newResource 构建带 service.name 的资源；主机/进程探测失败时退回
-// resource.Default()，但仍尽力保留 service.name。
+// newResource 构建带 service.name 的资源。
+//
+// resource.New 返回「部分资源 + error」形态：detect 每成功合并一个
+// detector 就保留其结果，错误经 errors.Join 累积随 res 一起返回
+// （ErrPartialResource 属正常返回路径）。因此 err != nil 时**优先使用
+// 返回的 res**——已成功探测到的 host/process/env 属性不该整份丢弃
+// （#169：静默回退到 resource.Default() 会让「明明配了
+// OTEL_RESOURCE_ATTRIBUTES 却一个都不生效」在日志里零线索）；降级必须
+// 可观察，故打一条带 err 的 WARN。仅当 res 为 nil（detect 理论不可达，
+// 防御性兜底）才回退 resource.Default()，并尽力保留 service.name。
 func newResource(cfg Config) *resource.Resource {
 	res, err := resource.New(context.Background(),
 		resource.WithHost(),
@@ -424,9 +452,15 @@ func newResource(cfg Config) *resource.Resource {
 		resource.WithTelemetrySDK(),
 		resource.WithAttributes(semconv.ServiceNameKey.String(cfg.ServiceName)),
 	)
-	if err == nil {
+	if err != nil {
+		// 降级可观察（#169）：部分资源仍可用，但探测不完整必须留痕。
+		tlog.Warn("resource partially detected, keeping successfully detected attributes",
+			logx.ErrKey, err, "service", cfg.ServiceName)
+	}
+	if res != nil {
 		return res
 	}
+	// 理论不可达：resource.New 总返回非 nil res。防御性兜底保持旧行为。
 	if merged, merr := resource.Merge(resource.Default(),
 		resource.NewWithAttributes("", semconv.ServiceNameKey.String(cfg.ServiceName))); merr == nil {
 		return merged

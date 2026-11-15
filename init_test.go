@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -191,6 +192,42 @@ func TestNewResource_ServiceName(t *testing.T) {
 	}
 }
 
+// TestNewResource_PartialDetectKeepsAttrsAndWarns 钉住 #169：resource.New
+// 返回「部分资源 + error」形态（ErrPartialResource 属正常返回路径，detect
+// 每成功合并一个 detector 就保留其结果）。探测出错时必须**保留**已成功
+// 探测的属性并打 WARN 留痕——此前 `err == nil` 才用 res，任一 detector
+// 报错即整份丢弃回退 resource.Default()，「配了 OTEL_RESOURCE_ATTRIBUTES
+// 却一个都不生效」在日志里零线索，与本仓「降级必须可观察」的纪律相悖。
+func TestNewResource_PartialDetectKeepsAttrsAndWarns(t *testing.T) {
+	cap := &warnCapture{}
+	orig := logx.Default()
+	logx.SetDefault(cap)
+	t.Cleanup(func() { logx.SetDefault(orig) })
+
+	// 轻度格式问题（#169 的典型触发面）：一个 pair 缺 "=" ⇒ env detector
+	// 报 ErrPartialResource，但同变量里的有效 pair 已进部分资源。
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod,missing-equals")
+
+	res := newResource(Config{ServiceName: "svc-partial"})
+
+	if dv, ok := res.Set().Value(attribute.Key("deployment.environment")); !ok || dv.AsString() != "prod" {
+		t.Errorf("deployment.environment = %v (ok=%v), want \"prod\" kept from the partial resource (#169)", dv, ok)
+	}
+	if sv, ok := res.Set().Value(attribute.Key("service.name")); !ok || sv.AsString() != "svc-partial" {
+		t.Errorf("service.name = %v (ok=%v), want \"svc-partial\"", sv, ok)
+	}
+
+	cap.mu.Lock()
+	warns := append([]string(nil), cap.warns...)
+	cap.mu.Unlock()
+	for _, w := range warns {
+		if strings.Contains(w, "resource partially detected") {
+			return
+		}
+	}
+	t.Fatalf("partial resource detection must emit a WARN (降级必须可观察), got warns: %v", warns)
+}
+
 // ⭐ DisableMetrics：collector 侧**没有 metrics 管线**时的止噪开关。
 //
 // 判据面 = **全局 MeterProvider 有没有被替换**：关掉时不建 OTLP metrics 导出器、
@@ -316,6 +353,60 @@ func TestInit_NaNSampleRateRejected(t *testing.T) {
 	}
 }
 
+// TestInit_EmptyServiceName_FailFast 钉住 #168：ServiceName 必填——空串会以
+// 「最后一个 detector」身份按 otel Merge 契约（b 覆盖 a，即使值为空）压过
+// OTEL_RESOURCE_ATTRIBUTES 与 resource.Default 的 unknown_service，全部
+// span/metric 按空服务名聚合且零报错。校验先于任何全局副作用，无网络动作。
+func TestInit_EmptyServiceName_FailFast(t *testing.T) {
+	// 环境变量里配了 service.name 也不能让空 Config 溜过去：这正是 #168 的
+	// 反面——此前空值会把这里的 env-svc 静默压掉，现在空值本身直接报错。
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=env-svc")
+
+	before := installed.Load()
+	_, err := Init(Config{Endpoint: "localhost:4317", Insecure: true})
+	if err == nil {
+		t.Fatal("Init with empty ServiceName must return an error (#168)")
+	}
+	if !strings.Contains(err.Error(), "ServiceName") {
+		t.Errorf("error should mention ServiceName, got: %v", err)
+	}
+	if installed.Load() != before {
+		t.Fatal("empty ServiceName must fail before any global side effect (no provider installed)")
+	}
+
+	// 对照：非空 ServiceName 正常 Init（Endpoint 空 = 本地 provider，零网络）。
+	p, err := Init(Config{ServiceName: "cfg-svc"})
+	if err != nil {
+		t.Fatalf("Init with non-empty ServiceName error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("Init returned nil provider")
+	}
+	_ = p.Shutdown(context.Background())
+}
+
+// TestNewResource_ServiceNameOverridesEnv 钉住 #168 的优先级对照面：非空
+// Config.ServiceName 排在 detector 链最后，按 Merge 契约覆盖
+// OTEL_RESOURCE_ATTRIBUTES 里的 service.name——这正是空值危害的另一面
+// （空值同样会覆盖，Init 已 fail-fast 挡住）；非空面保持 Config 优先，
+// env 的其余属性照常合并进来。
+func TestNewResource_ServiceNameOverridesEnv(t *testing.T) {
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=env-svc,deployment.environment=prod")
+
+	res := newResource(Config{ServiceName: "cfg-svc"})
+	v, ok := res.Set().Value(attribute.Key("service.name"))
+	if !ok {
+		t.Fatal("resource missing service.name attribute")
+	}
+	if v.AsString() != "cfg-svc" {
+		t.Errorf("service.name = %q, want %q (Config.ServiceName must win over OTEL_RESOURCE_ATTRIBUTES)", v.AsString(), "cfg-svc")
+	}
+	dv, ok := res.Set().Value(attribute.Key("deployment.environment"))
+	if !ok || dv.AsString() != "prod" {
+		t.Errorf("deployment.environment = %v (ok=%v), want \"prod\" merged from OTEL_RESOURCE_ATTRIBUTES", dv, ok)
+	}
+}
+
 // warnCapture 捕获 Warn 事件的记录型 Logger（其余方法经嵌入接口兜底，
 // 测试保证不会触达）。
 type warnCapture struct {
@@ -357,6 +448,74 @@ func TestInit_ZeroSampleRate_WarnsAndSucceeds(t *testing.T) {
 		t.Fatal("SampleRate=0 must emit a WARN explaining it means full sampling")
 	}
 	_ = p.Shutdown(context.Background())
+}
+
+// TestInit_ReInit_OrphanedInstrumentationStopsExporting 钉住 #170：re-Init
+// 关闭旧 TracerProvider 后，构造期固化了 tracer 的 instrumentation
+// （gormotel.NewPlugin 在构造期 otel.GetTracerProvider().Tracer(...)）的
+// span 静默不再导出——SDK 不报错、本包此前零日志。用 sdktrace 内存
+// exporter 把孤儿行为钉死：re-Init 前同一 tracer 正常导出、之后不再到达
+// exporter；从新全局重建后恢复正常导出；re-Init 必须打 WARN 点名风险。
+func TestInit_ReInit_OrphanedInstrumentationStopsExporting(t *testing.T) {
+	cap := &warnCapture{}
+	orig := logx.Default()
+	logx.SetDefault(cap)
+	t.Cleanup(func() { logx.SetDefault(orig) })
+
+	// 第一次 Init（Endpoint 空 = 本地 provider，零网络；SampleRate=1 不打
+	// SampleRate WARN，避免污染本测试的 WARN 判据）。
+	p1, err := Init(Config{ServiceName: "svc-orphan-a", SampleRate: 1})
+	if err != nil {
+		t.Fatalf("first Init() error: %v", err)
+	}
+	tp1 := p1.(*providerImpl).tracerProvider
+
+	// 给旧 provider 挂内存 exporter（SimpleSpanProcessor 同步导出，判据确定）。
+	exp1 := tracetest.NewInMemoryExporter()
+	tp1.RegisterSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp1))
+
+	// 构造期固化 tracer——复刻 gormotel.NewPlugin 的取 tracer 方式。
+	cached := otel.GetTracerProvider().Tracer("orphan-test")
+
+	_, span := cached.Start(context.Background(), "before-reinit")
+	span.End()
+	if n := len(exp1.GetSpans()); n != 1 {
+		t.Fatalf("before re-Init: exported %d spans, want 1", n)
+	}
+
+	// 第二次 Init ⇒ 旧 provider 被 Shutdown（其 span 处理器/导出器关停）。
+	p2, err := Init(Config{ServiceName: "svc-orphan-b", SampleRate: 1})
+	if err != nil {
+		t.Fatalf("second Init() error: %v", err)
+	}
+	defer func() { _ = p2.Shutdown(context.Background()) }()
+
+	// 孤儿面：同一 cached tracer 的 span 仍能创建（SDK 不报错），但不再导出。
+	_, span = cached.Start(context.Background(), "after-reinit")
+	span.End()
+	if n := len(exp1.GetSpans()); n != 0 {
+		t.Fatalf("cached tracer spans must stop exporting after re-Init (#170), got %d spans", n)
+	}
+
+	// 对照面：从新全局构造的 instrumentation 正常导出（重建即可恢复）。
+	tp2 := p2.(*providerImpl).tracerProvider
+	exp2 := tracetest.NewInMemoryExporter()
+	tp2.RegisterSpanProcessor(sdktrace.NewSimpleSpanProcessor(exp2))
+	_, span = otel.GetTracerProvider().Tracer("orphan-test").Start(context.Background(), "rebuilt")
+	span.End()
+	if n := len(exp2.GetSpans()); n != 1 {
+		t.Fatalf("rebuilt instrumentation exported %d spans, want 1", n)
+	}
+
+	// re-Init 必须打 WARN 点名「构造期固化的 instrumentation 必须重建」。
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	for _, w := range cap.warns {
+		if strings.Contains(w, "re-Init") && strings.Contains(w, "rebuild") {
+			return
+		}
+	}
+	t.Fatalf("re-Init must WARN about orphaned instrumentation (#170), got warns: %v", cap.warns)
 }
 
 // TestValidateSampleRate 单元钉住校验函数的边界。

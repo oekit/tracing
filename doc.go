@@ -29,7 +29,9 @@
 //
 // # 配置说明
 //
-//   - ServiceName: 服务名称，写入 resource 的 service.name 属性
+//   - ServiceName: 服务名称，写入 resource 的 service.name 属性；**必填**，
+//     空串 Init 直接报错 fail-fast（#168——空值会按 Merge 契约压过
+//     OTEL_RESOURCE_ATTRIBUTES 与 resource.Default）
 //   - Endpoint: OTLP gRPC 地址，如 "otel-collector:4317"；为空时不创建
 //     导出器、不发起网络连接（仅安装本地 provider）
 //   - Insecure: 是否跳过 TLS（本地开发用 true，生产用 false）
@@ -47,12 +49,22 @@
 // 不会指向已 Shutdown 僵尸实例。常规服务应只 Init 一次（bootstrap 已
 // 保证）。
 //
+// ⚠️ 硬契约（#170）：re-Init 关闭旧 TracerProvider 之后，所有在上一次
+// Init 之前/之间构造的 instrumentation（gormotel.NewPlugin、otelhttp
+// WrapTransport、hertzotel.NewServerTracing 等在构造期固化 tracer 的
+// 插件）**必须重建**——其 tracer 仍指向已 Shutdown 的 provider，span
+// 静默不再导出（SDK 不报错、零日志）。Init 在 re-Init 时打 WARN 点名
+// 该风险。
+//
 // # 与 bootstrap 集成
 //
 // bootstrap.Run 会自动初始化 tracing：
 //
 //	b, _ := bootstrap.New(bootstrap.WithServiceName("my-service"),
-//	    bootstrapobs.WithTracing(tracing.Config{Endpoint: "otel-collector:4317"})) // bootstrap/obs
+//	    bootstrapobs.WithTracing(tracing.Config{ // bootstrap/obs
+//	        ServiceName: "my-service", // 必填：空串 Init 直接报错（#168）
+//	        Endpoint:    "otel-collector:4317",
+//	    }))
 //	b.Run(func(app *bootstrap.App) error {
 //	    // ...
 //	})
