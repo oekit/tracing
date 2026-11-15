@@ -1,3 +1,11 @@
+## [v0.4.6] — 2026-11-15
+
+- Init 校验 ServiceName 非空 fail-fast（#168）：空串不再以最后一个 detector 身份压过 OTEL_RESOURCE_ATTRIBUTES 与 resource.Default，校验先于任何全局副作用
+- newResource 保留部分探测结果（#169）：resource.New 返回部分资源+error 时优先用已探测属性并打带 err 的 WARN，不再整份丢弃回退 Default
+- re-Init 后旧 instrumentation 契约显式化（#170）：doc 补硬契约（既有 instrumentation 必须重建），Init 替换分支打 WARN 点名风险
+
+关联问题单：tracing#168、tracing#169、tracing#170。
+
 ## [v0.4.5] — 2026-11-13
 
 - Provider/端点契约：Shutdown 不再无条件关全局 MeterProvider（#121）、traceid 测试独立模块去 hertz 依赖（#122）、无 scheme 端点凭据守卫（#123）、gormotel 裸 Option 改名（#132）、gRPC Endpoint 校验三形态补全（#133）
