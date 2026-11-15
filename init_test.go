@@ -191,6 +191,42 @@ func TestNewResource_ServiceName(t *testing.T) {
 	}
 }
 
+// TestNewResource_PartialDetectKeepsAttrsAndWarns 钉住 #169：resource.New
+// 返回「部分资源 + error」形态（ErrPartialResource 属正常返回路径，detect
+// 每成功合并一个 detector 就保留其结果）。探测出错时必须**保留**已成功
+// 探测的属性并打 WARN 留痕——此前 `err == nil` 才用 res，任一 detector
+// 报错即整份丢弃回退 resource.Default()，「配了 OTEL_RESOURCE_ATTRIBUTES
+// 却一个都不生效」在日志里零线索，与本仓「降级必须可观察」的纪律相悖。
+func TestNewResource_PartialDetectKeepsAttrsAndWarns(t *testing.T) {
+	cap := &warnCapture{}
+	orig := logx.Default()
+	logx.SetDefault(cap)
+	t.Cleanup(func() { logx.SetDefault(orig) })
+
+	// 轻度格式问题（#169 的典型触发面）：一个 pair 缺 "=" ⇒ env detector
+	// 报 ErrPartialResource，但同变量里的有效 pair 已进部分资源。
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod,missing-equals")
+
+	res := newResource(Config{ServiceName: "svc-partial"})
+
+	if dv, ok := res.Set().Value(attribute.Key("deployment.environment")); !ok || dv.AsString() != "prod" {
+		t.Errorf("deployment.environment = %v (ok=%v), want \"prod\" kept from the partial resource (#169)", dv, ok)
+	}
+	if sv, ok := res.Set().Value(attribute.Key("service.name")); !ok || sv.AsString() != "svc-partial" {
+		t.Errorf("service.name = %v (ok=%v), want \"svc-partial\"", sv, ok)
+	}
+
+	cap.mu.Lock()
+	warns := append([]string(nil), cap.warns...)
+	cap.mu.Unlock()
+	for _, w := range warns {
+		if strings.Contains(w, "resource partially detected") {
+			return
+		}
+	}
+	t.Fatalf("partial resource detection must emit a WARN (降级必须可观察), got warns: %v", warns)
+}
+
 // ⭐ DisableMetrics：collector 侧**没有 metrics 管线**时的止噪开关。
 //
 // 判据面 = **全局 MeterProvider 有没有被替换**：关掉时不建 OTLP metrics 导出器、

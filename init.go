@@ -427,8 +427,16 @@ func defaultPropagator() propagation.TextMapPropagator {
 	)
 }
 
-// newResource 构建带 service.name 的资源；主机/进程探测失败时退回
-// resource.Default()，但仍尽力保留 service.name。
+// newResource 构建带 service.name 的资源。
+//
+// resource.New 返回「部分资源 + error」形态：detect 每成功合并一个
+// detector 就保留其结果，错误经 errors.Join 累积随 res 一起返回
+// （ErrPartialResource 属正常返回路径）。因此 err != nil 时**优先使用
+// 返回的 res**——已成功探测到的 host/process/env 属性不该整份丢弃
+// （#169：静默回退到 resource.Default() 会让「明明配了
+// OTEL_RESOURCE_ATTRIBUTES 却一个都不生效」在日志里零线索）；降级必须
+// 可观察，故打一条带 err 的 WARN。仅当 res 为 nil（detect 理论不可达，
+// 防御性兜底）才回退 resource.Default()，并尽力保留 service.name。
 func newResource(cfg Config) *resource.Resource {
 	res, err := resource.New(context.Background(),
 		resource.WithHost(),
@@ -437,9 +445,15 @@ func newResource(cfg Config) *resource.Resource {
 		resource.WithTelemetrySDK(),
 		resource.WithAttributes(semconv.ServiceNameKey.String(cfg.ServiceName)),
 	)
-	if err == nil {
+	if err != nil {
+		// 降级可观察（#169）：部分资源仍可用，但探测不完整必须留痕。
+		tlog.Warn("resource partially detected, keeping successfully detected attributes",
+			logx.ErrKey, err, "service", cfg.ServiceName)
+	}
+	if res != nil {
 		return res
 	}
+	// 理论不可达：resource.New 总返回非 nil res。防御性兜底保持旧行为。
 	if merged, merr := resource.Merge(resource.Default(),
 		resource.NewWithAttributes("", semconv.ServiceNameKey.String(cfg.ServiceName))); merr == nil {
 		return merged
