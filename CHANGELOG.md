@@ -1,3 +1,7 @@
+## [v0.4.7] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
+
 ## [v0.4.6] — 2026-11-15
 
 - Init 校验 ServiceName 非空 fail-fast（#168）：空串不再以最后一个 detector 身份压过 OTEL_RESOURCE_ATTRIBUTES 与 resource.Default，校验先于任何全局副作用
