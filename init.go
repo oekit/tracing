@@ -3,7 +3,6 @@ package tracing
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/oekit/logx"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	b3prop "go.opentelemetry.io/contrib/propagators/b3"
 	otprop "go.opentelemetry.io/contrib/propagators/ot"
@@ -272,7 +272,7 @@ func resolveProtocol(p string) (string, error) {
 	case ProtocolHTTP:
 		return ProtocolHTTP, nil
 	default:
-		return "", fmt.Errorf("tracing: unsupported protocol %q (want %q or %q)", p, ProtocolGRPC, ProtocolHTTP)
+		return "", pkgerrors.Newf("tracing: unsupported protocol %q (want %q or %q)", p, ProtocolGRPC, ProtocolHTTP)
 	}
 }
 
@@ -288,7 +288,7 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 		otlptracegrpc.WithEndpoint, otlptracegrpc.WithInsecure, otlptracegrpc.WithHeaders)
 	traceExp, err := otlptrace.New(context.Background(), otlptracegrpc.NewClient(traceOpts...))
 	if err != nil {
-		return nil, nil, fmt.Errorf("tracing: create otlp trace exporter: %w", err)
+		return nil, nil, pkgerrors.Wrapf(err, "tracing: create otlp trace exporter")
 	}
 
 	tp := sdktrace.NewTracerProvider(
@@ -308,7 +308,7 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	metricExp, err := otlpmetricgrpc.New(context.Background(), metricOpts...)
 	if err != nil {
 		_ = tp.Shutdown(context.Background()) // 回滚已创建的 trace provider
-		return nil, nil, fmt.Errorf("tracing: create otlp metric exporter: %w", err)
+		return nil, nil, pkgerrors.Wrapf(err, "tracing: create otlp metric exporter")
 	}
 
 	mp, err := assembleMeterProvider(metricExp, res, tp)
@@ -334,7 +334,7 @@ func assembleMeterProvider(metricExp metric.Exporter, res *resource.Resource, tp
 	if err := runtime.Start(runtime.WithMeterProvider(mp)); err != nil {
 		_ = mp.Shutdown(context.Background())
 		_ = tp.Shutdown(context.Background())
-		return nil, fmt.Errorf("tracing: start runtime metrics collector: %w", err)
+		return nil, pkgerrors.Wrapf(err, "tracing: start runtime metrics collector")
 	}
 	return mp, nil
 }
@@ -417,7 +417,7 @@ func validateGRPCEndpoint(endpoint string) error {
 // 0 不报错（零值缺省语义保持全量），但 Init 会打 WARN 点明「=全量采样」。
 func validateSampleRate(rate float64) error {
 	if math.IsNaN(rate) || rate < 0 {
-		return fmt.Errorf("tracing: invalid SampleRate %v (want 0.0~1.0; 0 与 >=1.0 均为全量采样，负值/NaN 是配置错误)", rate)
+		return pkgerrors.Newf("tracing: invalid SampleRate %v (want 0.0~1.0; 0 与 >=1.0 均为全量采样，负值/NaN 是配置错误)", rate)
 	}
 	return nil
 }
