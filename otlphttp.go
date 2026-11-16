@@ -3,10 +3,10 @@ package tracing
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/url"
 	"strings"
 
+	pkgerrors "github.com/oekit/pkg/errors"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -92,7 +92,7 @@ func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, er
 		var ue *url.Error
 		if errors.As(err, &ue) {
 			// 只回显内层原因，不回显原始 URL（可能带凭据/令牌）。
-			return ep, fmt.Errorf("tracing: invalid OTLP/HTTP endpoint: %w", ue.Err)
+			return ep, pkgerrors.Wrapf(ue.Err, "tracing: invalid OTLP/HTTP endpoint")
 		}
 		return ep, errors.New("tracing: invalid OTLP/HTTP endpoint")
 	}
@@ -102,7 +102,7 @@ func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, er
 	case "https":
 		ep.insecure = false
 	default:
-		return ep, fmt.Errorf("tracing: unsupported OTLP/HTTP endpoint scheme %q (want http or https)", u.Scheme)
+		return ep, pkgerrors.Newf("tracing: unsupported OTLP/HTTP endpoint scheme %q (want http or https)", u.Scheme)
 	}
 	if u.User != nil {
 		return ep, errors.New("tracing: OTLP/HTTP endpoint must not embed credentials; use Config.Headers instead")
@@ -167,7 +167,7 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	}
 	traceExp, err := otlptrace.New(context.Background(), otlptracehttp.NewClient(traceOpts...))
 	if err != nil {
-		return nil, nil, fmt.Errorf("tracing: create otlp http trace exporter: %w", err)
+		return nil, nil, pkgerrors.Wrapf(err, "tracing: create otlp http trace exporter")
 	}
 
 	tp := sdktrace.NewTracerProvider(
@@ -197,7 +197,7 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	metricExp, err := otlpmetrichttp.New(context.Background(), metricOpts...)
 	if err != nil {
 		_ = tp.Shutdown(context.Background()) // 回滚已创建的 trace provider
-		return nil, nil, fmt.Errorf("tracing: create otlp http metric exporter: %w", err)
+		return nil, nil, pkgerrors.Wrapf(err, "tracing: create otlp http metric exporter")
 	}
 
 	mp, err := assembleMeterProvider(metricExp, res, tp) // 装配尾段与 grpc 分支共用（#110）

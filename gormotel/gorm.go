@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"fmt"
 	"io"
 	"regexp"
 	"strings"
 
+	pkgerrors "github.com/oekit/pkg/errors"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -157,7 +157,7 @@ func (p otelPlugin) Initialize(db *gorm.DB) (err error) {
 	var firstErr error
 	for _, h := range hooks {
 		if err := h.callback.Register("otel:"+h.name, h.hook); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("callback register %s failed: %w", h.name, err)
+			firstErr = pkgerrors.Wrapf(err, "callback register %s failed", h.name)
 		}
 	}
 	return firstErr
