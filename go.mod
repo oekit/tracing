@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/glebarez/sqlite v1.11.0
-	github.com/oekit/logx v0.11.0
+	github.com/oekit/logx v0.12.0
 	github.com/oekit/pkg v0.53.0
 	github.com/redis/go-redis/extra/redisotel/v9 v9.23.0
 	github.com/redis/go-redis/v9 v9.23.0
