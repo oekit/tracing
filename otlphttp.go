@@ -72,16 +72,18 @@ func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, er
 			return ep, errors.New("tracing: scheme-less OTLP/HTTP endpoint must be plain \"host:port\" (e.g. \"otel-collector:4318\"); a base path requires an explicit scheme (e.g. \"https://host:4318/api/otel\")")
 		}
 		// 凭据/query/fragment 守卫（#123）：与 scheme 分支（url.Parse 后的
-		// u.User/u.RawQuery/u.Fragment 三道）同口径，错误文案逐字一致且不
-		// 回显端点原值——无 scheme 形态同样可能内嵌凭据/令牌。
+		// u.User/u.RawQuery/u.Fragment 三道）同口径——#182 起错误文案经
+		// endpoint.go 的共享构造器逐字一致（漂移面已收敛），且构造器签名
+		// 不接收端点值，「不回显端点原值」在类型上不可能违反——无 scheme
+		// 形态同样可能内嵌凭据/令牌。
 		if strings.Contains(raw, "@") {
-			return ep, errors.New("tracing: OTLP/HTTP endpoint must not embed credentials; use Config.Headers instead")
+			return ep, errEndpointCredentials(ProtocolHTTP)
 		}
 		if strings.Contains(raw, "?") {
-			return ep, errors.New("tracing: OTLP/HTTP endpoint must not carry query parameters; use Config.Headers instead")
+			return ep, errEndpointQuery(ProtocolHTTP)
 		}
 		if strings.Contains(raw, "#") {
-			return ep, errors.New("tracing: OTLP/HTTP endpoint must not carry a fragment; it is never sent to the server, use Config.Headers for auth")
+			return ep, errEndpointFragment()
 		}
 		// 无 scheme：host:port 形态，scheme 由 Insecure 决定。
 		ep.hostPort = raw
@@ -105,14 +107,14 @@ func parseOTLPHTTPEndpoint(endpoint string, insecure bool) (otlpHTTPEndpoint, er
 		return ep, pkgerrors.Newf("tracing: unsupported OTLP/HTTP endpoint scheme %q (want http or https)", u.Scheme)
 	}
 	if u.User != nil {
-		return ep, errors.New("tracing: OTLP/HTTP endpoint must not embed credentials; use Config.Headers instead")
+		return ep, errEndpointCredentials(ProtocolHTTP)
 	}
 	if u.RawQuery != "" {
-		// 不回显原值：query 里可能就是 token 本体。
-		return ep, errors.New("tracing: OTLP/HTTP endpoint must not carry query parameters; use Config.Headers instead")
+		// 不回显原值：query 里可能就是 token 本体（守卫文案单源见 endpoint.go，#182）。
+		return ep, errEndpointQuery(ProtocolHTTP)
 	}
 	if u.Fragment != "" {
-		return ep, errors.New("tracing: OTLP/HTTP endpoint must not carry a fragment; it is never sent to the server, use Config.Headers for auth")
+		return ep, errEndpointFragment()
 	}
 	if u.Host == "" {
 		return ep, errors.New("tracing: OTLP/HTTP endpoint missing host")
@@ -154,17 +156,10 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	tracePath, metricPath := ep.signalPaths()
 
 	// ---- tracing exporter ----
-	var traceOpts []otlptracehttp.Option
-	traceOpts = append(traceOpts,
-		otlptracehttp.WithEndpoint(ep.hostPort),
-		otlptracehttp.WithURLPath(tracePath),
-	)
-	if ep.insecure {
-		traceOpts = append(traceOpts, otlptracehttp.WithInsecure())
-	}
-	if len(cfg.Headers) > 0 {
-		traceOpts = append(traceOpts, otlptracehttp.WithHeaders(cfg.Headers))
-	}
+	// 连接选项四段同构装配与 gRPC 分支单源（applyCommonOpts，#182）：
+	// Endpoint/URLPath/Insecure/Headers，差异只剩构造器属于哪条 signal。
+	traceOpts := applyCommonOpts(ep.hostPort, tracePath, ep.insecure, cfg.Headers,
+		otlptracehttp.WithEndpoint, otlptracehttp.WithURLPath, otlptracehttp.WithInsecure, otlptracehttp.WithHeaders)
 	traceExp, err := otlptrace.New(context.Background(), otlptracehttp.NewClient(traceOpts...))
 	if err != nil {
 		return nil, nil, pkgerrors.Wrapf(err, "tracing: create otlp http trace exporter")
@@ -183,17 +178,8 @@ func newHTTPExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	if cfg.DisableMetrics {
 		return tp, nil, nil
 	}
-	var metricOpts []otlpmetrichttp.Option
-	metricOpts = append(metricOpts,
-		otlpmetrichttp.WithEndpoint(ep.hostPort),
-		otlpmetrichttp.WithURLPath(metricPath),
-	)
-	if ep.insecure {
-		metricOpts = append(metricOpts, otlpmetrichttp.WithInsecure())
-	}
-	if len(cfg.Headers) > 0 {
-		metricOpts = append(metricOpts, otlpmetrichttp.WithHeaders(cfg.Headers))
-	}
+	metricOpts := applyCommonOpts(ep.hostPort, metricPath, ep.insecure, cfg.Headers,
+		otlpmetrichttp.WithEndpoint, otlpmetrichttp.WithURLPath, otlpmetrichttp.WithInsecure, otlpmetrichttp.WithHeaders)
 	metricExp, err := otlpmetrichttp.New(context.Background(), metricOpts...)
 	if err != nil {
 		_ = tp.Shutdown(context.Background()) // 回滚已创建的 trace provider

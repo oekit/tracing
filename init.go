@@ -284,8 +284,8 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	}
 
 	// ---- tracing exporter ----
-	traceOpts := applyCommonGrpcOpts(cfg.Endpoint, cfg,
-		otlptracegrpc.WithEndpoint, otlptracegrpc.WithInsecure, otlptracegrpc.WithHeaders)
+	traceOpts := applyCommonOpts(cfg.Endpoint, "", cfg.Insecure, cfg.Headers,
+		otlptracegrpc.WithEndpoint, nil, otlptracegrpc.WithInsecure, otlptracegrpc.WithHeaders)
 	traceExp, err := otlptrace.New(context.Background(), otlptracegrpc.NewClient(traceOpts...))
 	if err != nil {
 		return nil, nil, pkgerrors.Wrapf(err, "tracing: create otlp trace exporter")
@@ -303,8 +303,8 @@ func newGRPCExportingProviders(cfg Config, sampler sdktrace.Sampler, res *resour
 	if cfg.DisableMetrics {
 		return tp, nil, nil
 	}
-	metricOpts := applyCommonGrpcOpts(cfg.Endpoint, cfg,
-		otlpmetricgrpc.WithEndpoint, otlpmetricgrpc.WithInsecure, otlpmetricgrpc.WithHeaders)
+	metricOpts := applyCommonOpts(cfg.Endpoint, "", cfg.Insecure, cfg.Headers,
+		otlpmetricgrpc.WithEndpoint, nil, otlpmetricgrpc.WithInsecure, otlpmetricgrpc.WithHeaders)
 	metricExp, err := otlpmetricgrpc.New(context.Background(), metricOpts...)
 	if err != nil {
 		_ = tp.Shutdown(context.Background()) // 回滚已创建的 trace provider
@@ -339,23 +339,37 @@ func assembleMeterProvider(metricExp metric.Exporter, res *resource.Resource, tp
 	return mp, nil
 }
 
-// applyCommonGrpcOpts 收集 gRPC 分支 trace/metric 两组导出器逐字复制的连接
-// 选项（Endpoint/Insecure/Headers，#110）：Option 构造器由调用方传入，两组
-// 选项的差异只剩「构造器属于哪条 signal」。
-func applyCommonGrpcOpts[OPT any](
-	endpoint string,
-	cfg Config,
+// applyCommonOpts 收集 gRPC/HTTP 两协议、trace/metric 两 signal 的导出器
+// 连接选项共有的同构装配（#110 gRPC 侧先行，#182 泛化收编 HTTP 侧，消除
+// otlphttp.go 两处手写的四段同构）：
+//
+//	WithEndpoint(endpoint) → [WithURLPath(urlPath)，仅 HTTP 侧注入] →
+//	[WithInsecure，insecure 时] → [WithHeaders，headers 非空时]
+//
+// Option 构造器由调用方传入——各装配点的差异只剩「构造器属于哪条
+// signal/哪个协议」。urlPath/withURLPath 是 HTTP 侧独有的一段（gRPC 拨号
+// 目标无路径概念，传空串与 nil 跳过）；insecure 由调用方显式传入——两侧
+// 来源不同（gRPC 取 Config.Insecure，HTTP 取解析后端点的 scheme 裁决，
+// scheme 优先于 Config.Insecure），不能统一从 Config 读。
+func applyCommonOpts[OPT any](
+	endpoint, urlPath string,
+	insecure bool,
+	headers map[string]string,
 	withEndpoint func(string) OPT,
+	withURLPath func(string) OPT, // nil = 不注入 WithURLPath（gRPC 侧）
 	withInsecure func() OPT,
 	withHeaders func(map[string]string) OPT,
 ) []OPT {
 	var opts []OPT
 	opts = append(opts, withEndpoint(endpoint))
-	if cfg.Insecure {
+	if withURLPath != nil {
+		opts = append(opts, withURLPath(urlPath))
+	}
+	if insecure {
 		opts = append(opts, withInsecure())
 	}
-	if len(cfg.Headers) > 0 {
-		opts = append(opts, withHeaders(cfg.Headers))
+	if len(headers) > 0 {
+		opts = append(opts, withHeaders(headers))
 	}
 	return opts
 }
@@ -392,20 +406,27 @@ func buildSampler(rate float64) sdktrace.Sampler {
 //     但导出永远拨不通（零拨号）。端点形态里空白永远非法，宁可报错不静默
 //     trim（静默 trim 会把「配置里写的是什么」与「实际拨的是什么」割裂开）。
 //
-// 错误不回显端点原值——污染串大概率内嵌凭据/令牌，不进日志与错误信息。
+// 错误不回显端点原值——污染串大概率内嵌凭据/令牌，不进日志与错误信息；
+// 凭据/query 型文案经 endpoint.go 的共享构造器单源（#182），漂移面已收敛。
+//
+// 同步义务（#182，与 HTTP 侧互指）：HTTP 侧 parseOTLPHTTPEndpoint 的凭据/
+// query/fragment 三道守卫（#99/#123，otlphttp.go 的 scheme 与无 scheme 两个
+// 分支）与本函数的 query/凭据两道同型——错误文案经共享构造器单源，禁令域
+// 两侧各自维护（HTTP 多 fragment、本侧多 whitespace）。新增污染形态或改
+// 禁令域时两侧同步评估，勿单侧加禁。
 func validateGRPCEndpoint(endpoint string) error {
 	if strings.Contains(endpoint, "://") || strings.Contains(endpoint, "/") {
 		return errors.New("tracing: gRPC Config.Endpoint must be \"host:port\" (e.g. \"otel-collector:4317\"); " +
 			"URL-form endpoint must set Protocol: \"http\"")
 	}
 	if strings.Contains(endpoint, "?") {
-		return errors.New("tracing: gRPC Config.Endpoint must not carry query parameters; the gRPC transport never consumes query, so the token would be silently dropped — use Config.Headers instead (OTLP metadata)")
+		return errEndpointQuery(ProtocolGRPC)
 	}
 	if strings.Contains(endpoint, "@") {
-		return errors.New("tracing: gRPC Config.Endpoint must not embed credentials; use Config.Headers instead (OTLP metadata)")
+		return errEndpointCredentials(ProtocolGRPC)
 	}
 	if strings.ContainsFunc(endpoint, unicode.IsSpace) {
-		return errors.New("tracing: gRPC Config.Endpoint must be plain \"host:port\" without whitespace (a padded endpoint dials a polluted target and exports nothing); trim the value")
+		return errEndpointWhitespace()
 	}
 	return nil
 }
