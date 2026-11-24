@@ -5,7 +5,11 @@ go 1.26.0
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/oekit/logx v0.12.1
+<<<<<<< HEAD
 	github.com/oekit/pkg v0.61.1
+=======
+	github.com/oekit/pkg v0.61.2
+>>>>>>> 003e52c (build: 依赖地板对齐——pkg → v0.61.2)
 	github.com/redis/go-redis/extra/redisotel/v9 v9.23.0
 	github.com/redis/go-redis/v9 v9.23.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
